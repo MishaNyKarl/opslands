@@ -1,0 +1,40 @@
+import { pathToFileURL } from 'node:url';
+import assert from 'node:assert/strict';
+let input = '';
+for await (const chunk of process.stdin) input += chunk;
+const { origin, token } = JSON.parse(input);
+const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const browser = await chromium.launch({ executablePath: process.env.BROWSER_PATH, headless: true });
+try {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await context.addCookies([{ name: 'opslands_session', value: token, url: origin, httpOnly: true, secure: true, sameSite: 'Lax' }]);
+  const page = await context.newPage(), errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  await page.goto(origin); await page.locator('.card').first().waitFor();
+  await page.locator('#profile').click();
+  await page.getByRole('button', { name:'Связать OpsVault',exact:true }).waitFor();
+  await page.locator('#close-modal').click();
+  assert.ok(await page.locator('.card').count() >= 3);
+  assert.equal(await page.locator('#auth-root').isVisible(), false);
+  await page.locator('.card iframe').first().contentFrame().locator('h1').waitFor();
+  assert.equal(await page.locator('.card iframe').first().contentFrame().locator('body').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(250, 250, 247)');
+  await page.locator('[data-view=admin]').click(); await page.locator('#admin-search').waitFor();
+  assert.ok(await page.locator('.admin-table').first().locator('tbody tr').count() >= 1);
+  await page.screenshot({ path: 'data/qa/production-admin.png', fullPage: true });
+  const result = await page.evaluate(async () => {
+    const res = await fetch('/api/landings/story/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ partnerId: 'generic', action: 'https://example.com', values: {} }) });
+    return { status: res.status, body: await res.json() };
+  });
+  assert.equal(result.status, 400); assert.ok(result.body.error.includes('ID оффера'));
+  await page.reload(); await page.locator('.card').first().waitFor();
+  assert.equal(await page.locator('#auth-root').isVisible(), false);
+  const anonymous = await browser.newContext();
+  const unauthenticated = await anonymous.request.get(origin + '/api/catalog'); assert.equal(unauthenticated.status(), 401);
+  const signIn = await anonymous.newPage(); await signIn.goto(origin);
+  await signIn.getByRole('link', {name:'Войти через OpsVault',exact:true}).waitFor();
+  const oidcStart = await anonymous.request.get(origin + '/auth/opsvault/login', { maxRedirects:0 });
+  assert.equal(oidcStart.status(),302); assert.equal(new URL(oidcStart.headers().location).searchParams.get('client_id'),'opslands');
+  assert.ok(oidcStart.headers()['set-cookie'].includes('HttpOnly'));
+  assert.deepEqual(errors, []);
+  console.log('Production QA passed: HTTPS, authenticated admin/catalog, preview, POST origin validation, persistent login, anonymous access blocked.');
+} finally { await browser.close(); }

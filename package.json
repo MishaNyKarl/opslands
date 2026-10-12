@@ -1,0 +1,18 @@
+{
+  "name": "opslands",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Локальная командная библиотека лендингов",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "jose": "6.2.12",
+    "openid-client": "^6.8.8"
+  }
+}

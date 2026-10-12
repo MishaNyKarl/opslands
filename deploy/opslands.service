@@ -1,0 +1,28 @@
+[Unit]
+Description=OPSLands team landing library
+After=network.target
+
+[Service]
+Type=simple
+User=opslands
+Group=opslands
+WorkingDirectory=/opt/opslands/current
+ExecStart=/opt/opslands/node/bin/node /opt/opslands/current/server.mjs
+Environment=NODE_ENV=production
+Environment=PORT=3107
+Environment=OPSLANDS_DATA=/var/lib/opslands
+Environment=OPSLANDS_ORIGIN=https://land.portalwiki.world
+Environment=OPSLANDS_SECURE_COOKIE=1
+Environment=OPSLANDS_TRUST_PROXY=1
+EnvironmentFile=-/etc/opslands-sso.env
+Restart=always
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/opslands
+
+[Install]
+WantedBy=multi-user.target
