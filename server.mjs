@@ -130,10 +130,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && /^\/fonts\/(space-grotesk|manrope)-(400|500|600|700)\.ttf$/.test(path)) {
       res.writeHead(200, { 'Content-Type': 'font/ttf' }); return res.end(readFileSync(join(root, 'public', path.slice(1))));
     }
-    if (req.method === 'GET' && ['/', '/app.js', '/icons.js', '/style.css'].includes(path)) {
+    if (req.method === 'GET' && ['/', '/app.js', '/icons.js', '/style.css', '/favicon.ico', '/favicon.svg', '/favicon.png', '/apple-touch-icon.png'].includes(path)) {
       res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
       const file = path === '/' ? 'index.html' : path.slice(1);
-      res.writeHead(200, { 'Content-Type': { 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'icons.js': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8' }[file] }); return res.end(readFileSync(join(root, 'public', file)));
+      res.writeHead(200, { 'Content-Type': { 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'icons.js': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8', 'favicon.svg': 'image/svg+xml', 'favicon.ico': 'image/vnd.microsoft.icon', 'favicon.png': 'image/png', 'apple-touch-icon.png': 'image/png' }[file] }); return res.end(readFileSync(join(root, 'public', file)));
     }
     json(res, { error: 'Не найдено' }, 404);
   } catch (e) { json(res, { error: e.message }, e.status || (e.message === 'Запись не найдена' ? 404 : 400)); }
