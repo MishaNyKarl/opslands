@@ -34,7 +34,7 @@ async function fixture() {
   const fetcher=async(url,options)=> {
     const body=JSON.parse(options.body);
     if(url.endsWith('/session/'))return Response.json({issuer,subject,sid:api.sidMismatch?'wrong':'sid1',lease_token:'lease-secret',role:api.role,expires_at:Date.now()/1000+3600});
-    if(url.endsWith('/access/')||url.endsWith('/local-access/'))return Response.json({role:api.role,valid_for:60});
+    if(url.endsWith('/access/')||url.endsWith('/local-access/'))return api.accessDenied?new Response('',{status:403}):Response.json({role:api.role,valid_for:60});
     if(url.endsWith('/credentials/')){api.credentialCalls++; if(api.publishFailure)return new Response('',{status:500});api.published=body;return Response.json({saved:true,credential_id:1,credential_url:'/vault/accounts/1/'});}
     if(url.endsWith('/credentials/read/'))return Response.json(api.published?{found:true,local_user_id:api.published.local_user_id,username:api.published.username,password:api.published.password}:{found:false});
     throw Error('unknown endpoint');
@@ -87,4 +87,25 @@ test('JIT is closed for an existing-data pilot; bad local password and absent co
     await assert.rejects(f.sso.begin(f.req,response(),f.user,{password:'original-password',consent:false}));
     const url=await f.begin(false);await assert.rejects(f.sso.callback(f.req,response(),url,null));assert.equal(f.all('user').length,1);
   }finally{f.db.close();}
+});
+test('JIT creates a separate account and vault credentials once; repeat keeps ID/login/password',async()=>{
+  const f=await fixture();try{
+    f.env.SSO_JIT='1';
+    await f.sso.callback(f.req,response(),await f.begin(false),null);
+    const created=f.all('user').find(u=>u.id!==f.user.id),first={...f.api.published};
+    assert.ok(created.sso);assert.equal(created.role,'member');assert.ok(await f.auth.checkPassword(created,first.password));
+    assert.equal(first.local_user_id,created.id);assert.equal(first.username,created.login);
+    assert.ok(!JSON.stringify(f.all('user')).includes(first.password));
+    await f.sso.callback(f.req,response(),await f.begin(false),null);
+    assert.equal(f.all('user').length,2);assert.equal(f.api.credentialCalls,1);assert.equal(f.get('user',created.id).hash,created.hash);
+  }finally{f.db.close();}
+});
+test('JIT refuses missing grants and protects an active unlinked existing account',async()=>{
+  for(const mode of ['denied','existing']){
+    const f=await fixture();try{
+      f.env.SSO_JIT='1';const url=await f.begin(false);f.api.accessDenied=mode==='denied';
+      await assert.rejects(f.sso.callback(f.req,response(),url,mode==='existing'?f.user:null));
+      assert.equal(f.all('user').length,1);assert.equal(f.api.credentialCalls,0);assert.equal(f.get('user',f.user.id).hash,f.user.hash);
+    }finally{f.db.close();}
+  }
 });

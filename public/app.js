@@ -3,7 +3,7 @@ document.querySelectorAll('[data-lucide]').forEach(el => el.innerHTML = icon(el.
 const $ = (s, root = document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let user = '', account = null;
-let ssoEnabled = false;
+let ssoEnabled = false, ssoJitEnabled = false;
 const state = { view: 'catalog', landings: [], partners: [], query: '', type: '', language: '', sort: 'new' };
 const modal = $('#modal'), content = $('#content');
 $('.local-badge').lastChild.textContent = ['localhost', '127.0.0.1'].includes(location.hostname) ? ' Локальный MVP' : ' Командный MVP';
@@ -129,7 +129,7 @@ start().catch(e => { document.body.classList.remove('booting'); content.innerHTM
 
 async function start() {
   const session = await api('/api/auth/me');
-  ssoEnabled = session.ssoEnabled;
+  ssoEnabled = session.ssoEnabled; ssoJitEnabled = session.ssoJitEnabled;
   if (!session.user) return showAuth(session.needsSetup);
   account = session.user; user = account.name;
   await load(); document.body.classList.remove('booting', 'auth-required'); $('#auth-root').hidden = true;
@@ -141,7 +141,7 @@ function showAuth(setup) {
   if (modal.open) modal.close(); account = null; user = ''; state.view = 'catalog';
   document.body.classList.remove('booting'); document.body.classList.add('auth-required');
   const root = $('#auth-root'); root.hidden = false;
-  root.innerHTML = `<div class="auth-intro"><a class="brand" href="/">ops<span>lands</span>${icon('arrow-up-right')}</a><p class="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО КОМАНДЫ</p><h1>Один вход.<br>Все ваши ленды.</h1><p>Библиотека шаблонов, личные версии и готовые сборки — в одном месте.</p><span class="auth-note">${icon('check')} Вход сохраняется на этом устройстве</span></div><form id="login-form" class="auth-card fields"><div><p class="eyebrow">${setup ? 'ПЕРВЫЙ ЗАПУСК' : 'С ВОЗВРАЩЕНИЕМ'}</p><h2>${setup ? 'Создайте администратора' : 'Войти в OPSLands'}</h2><p class="subtitle">${setup ? 'Первый аккаунт получит управление командой и всеми лендами.' : 'Войдите один раз. Дальше платформа откроется сразу.'}</p></div>${setup ? '<label>Ваше имя<input name="name" autocomplete="name" required maxlength="80" placeholder="Как к вам обращаться"></label>' : ''}${ssoEnabled && !setup ? '<a class="secondary wide sso-login" href="/auth/opsvault/login">Войти через OpsVault</a><p class="auth-divider">или логин и пароль OPSLands</p>' : ''}<label>Логин<input name="login" autocomplete="username" required minlength="3" maxlength="80" placeholder="your.login" autocapitalize="none" spellcheck="false"></label><label>Пароль<input name="password" type="password" autocomplete="${setup ? 'new-password' : 'current-password'}" required ${setup ? 'minlength="8"' : ''} maxlength="200" placeholder="${setup ? 'Минимум 8 символов' : 'Ваш пароль'}"></label><div class="error" role="alert"></div><button class="primary wide" type="submit">${setup ? 'Создать и войти' : 'Войти'} ${icon('arrow-up-right')}</button><p class="auth-footnote">${setup ? 'Существующие демо будут общими. Загруженные ранее ленды станут вашими личными.' : 'Аккаунты для команды создает администратор.'}</p></form>`;
+  root.innerHTML = `<div class="auth-intro"><a class="brand" href="/">ops<span>lands</span>${icon('arrow-up-right')}</a><p class="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО КОМАНДЫ</p><h1>Один вход.<br>Все ваши ленды.</h1><p>Библиотека шаблонов, личные версии и готовые сборки — в одном месте.</p><span class="auth-note">${icon('check')} Вход сохраняется на этом устройстве</span></div><form id="login-form" class="auth-card fields"><div><p class="eyebrow">${setup ? 'ПЕРВЫЙ ЗАПУСК' : 'С ВОЗВРАЩЕНИЕМ'}</p><h2>${setup ? 'Создайте администратора' : 'Войти в OPSLands'}</h2><p class="subtitle">${setup ? 'Первый аккаунт получит управление командой и всеми лендами.' : 'Войдите один раз. Дальше платформа откроется сразу.'}</p></div>${setup ? '<label>Ваше имя<input name="name" autocomplete="name" required maxlength="80" placeholder="Как к вам обращаться"></label>' : ''}${ssoEnabled && !setup ? '<a class="secondary wide sso-login" href="/auth/opsvault/login">Войти через OpsVault</a><p class="auth-divider">или логин и пароль OPSLands</p>' : ''}<label>Логин<input name="login" autocomplete="username" required minlength="3" maxlength="80" placeholder="your.login" autocapitalize="none" spellcheck="false"></label><label>Пароль<input name="password" type="password" autocomplete="${setup ? 'new-password' : 'current-password'}" required ${setup ? 'minlength="8"' : ''} maxlength="200" placeholder="${setup ? 'Минимум 8 символов' : 'Ваш пароль'}"></label><div class="error" role="alert"></div><button class="primary wide" type="submit">${setup ? 'Создать и войти' : 'Войти'} ${icon('arrow-up-right')}</button><p class="auth-footnote">${setup ? 'Существующие демо будут общими. Загруженные ранее ленды станут вашими личными.' : ssoJitEnabled ? 'Первый вход через OpsVault автоматически создаст аккаунт OPSLands, если вам выдан доступ.' : 'Аккаунты для команды создает администратор.'}</p></form>`;
   const form = $('#login-form');
   form.onsubmit = async e => {
     e.preventDefault(); const button = $('button[type=submit]', form); button.disabled = true; $('.error', form).classList.remove('visible');

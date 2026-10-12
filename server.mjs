@@ -78,7 +78,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (user && (path.startsWith('/preview/') || path.startsWith('/api/') && !['/api/auth/login', '/api/auth/logout'].includes(path) || linkingPaths.includes(path))) { await sso.authorize(user, req, req.method !== 'GET'); req.opsUser = user; }
     req.checkCentralLogin = async candidate => { await sso.authorize(candidate, null, true); };
-    if (path === '/api/auth/me' && req.method === 'GET') return json(res, { user: user ? { ...publicUser(user), sessionMode: req.opsSession?.mode || 'local' } : null, needsSetup: !auth.users().length, ssoEnabled: sso.enabled(), pendingLink: user ? await sso.pending(req, user) : null });
+    if (path === '/api/auth/me' && req.method === 'GET') return json(res, { user: user ? { ...publicUser(user), sessionMode: req.opsSession?.mode || 'local' } : null, needsSetup: !auth.users().length, ssoEnabled: sso.enabled(), ssoJitEnabled: sso.jitEnabled(), pendingLink: user ? await sso.pending(req, user) : null });
     if (path === '/api/auth/setup' && req.method === 'POST') return json(res, { user: await auth.setup(await body(req), res) }, 201);
     if (path === '/api/auth/login' && req.method === 'POST') return json(res, { user: await auth.login(await body(req), req, res) });
     if (linkingPaths.includes(path) && !user) return json(res, { error: 'Войдите в локальный аккаунт' }, 401);
