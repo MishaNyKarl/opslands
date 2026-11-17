@@ -73,7 +73,7 @@ test('budget and configured models are validated before paid calls; daily reserv
   try {
     await assert.rejects(store.create(user, { ...input, budgetUsd: 0.001 }), /Резерв/);
     await assert.rejects(store.create(user, { ...input, textModel: 'unapproved/model' }), /не разрешена/);
-    await assert.rejects(store.create(user, { ...input, prompt: 'token=secret' }), /без секретов/);
+    await assert.rejects(store.create(user, { ...input, prompt: 'token=secret' }), /секрет/);
     assert.equal(calls.length, 0);
     const job = await store.create(user, input); await completed(store, job.id);
     store.close(); const restarted = adaptationStore(options);

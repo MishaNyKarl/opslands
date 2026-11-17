@@ -116,3 +116,43 @@ test('a vector disguised as JPEG is rejected before any paid request', async () 
     assert.equal(calls.filter(c => c.body).length, 0);
   } finally { store.close(); }
 });
+
+test('image requests combine common instructions and only their own individual note, without requiring a landing prompt', async () => {
+  const { store, calls, input } = fixture();
+  try {
+    const archive = zip({ 'index.html': b64(`<h1>Welcome</h1><img src="hero.jpg">${form}`), 'hero.jpg': pixel, 'unused.jpg': pixel }).toString('base64');
+    const inspected = await store.inspect({ ...input, archive }), ids = inspected.images.map(i => i.id);
+    const job = await store.create(user, { ...input, archive, prompt: '', mode: 'images', images: ids, imagePrompt: 'Для Турции. Все картинки: теплый свет и единый стиль.', imagePrompts: { [ids[0]]: 'Первый файл: сохранить одежду героя.', [ids[1]]: 'Второй файл: заменить фон на побережье.' } });
+    assert.equal((await finish(store, job.id)).state, 'ready');
+    const requests = calls.filter(call => call.url.endsWith('/images'));
+    assert.equal(requests.length, 2);
+    for (const request of requests) assert.match(request.body.prompt, /теплый свет и единый стиль/);
+    assert.match(requests[0].body.prompt, /сохранить одежду героя/); assert.doesNotMatch(requests[0].body.prompt, /заменить фон на побережье/);
+    assert.match(requests[1].body.prompt, /заменить фон на побережье/); assert.doesNotMatch(requests[1].body.prompt, /сохранить одежду героя/);
+    assert.match(requests[0].body.prompt, /take precedence/);
+    assert.match(JSON.parse(calls.find(c => c.body?.response_format).body.messages[1].content).request, /Для Турции/);
+  } finally { store.close(); }
+});
+
+test('image prompt validation rejects secrets, oversized notes and notes for unselected files before any model request', async () => {
+  const { store, calls, input } = fixture();
+  try {
+    const archive = zip({ 'index.html': b64(`<img src="hero.jpg">${form}`), 'hero.jpg': pixel }).toString('base64');
+    const id = (await store.inspect({ ...input, archive })).images[0].id;
+    const base = { ...input, archive, mode: 'images', images: [id] };
+    await assert.rejects(store.create(user, { ...base, imagePrompt: 'api_key=do-not-transmit' }), /Общий промпт.*секреты/);
+    await assert.rejects(store.create(user, { ...base, imagePrompts: { [id]: 'x'.repeat(2001) } }), /hero.jpg.*2001.*2000/);
+    await assert.rejects(store.create(user, { ...base, imagePrompts: { unrelated: 'Change this' } }), /только для выбранных/);
+    assert.equal(calls.length, 0);
+  } finally { store.close(); }
+});
+
+test('a half-dollar job is allowed by a half-dollar server ceiling while higher user limits are rejected', async () => {
+  const { store, input } = fixture({ env: { OPSLANDS_AI_MAX_JOB_USD: '0.50', OPSLANDS_AI_DAILY_USD: '0.50' } });
+  try {
+    assert.equal(store.config().maxJobUsd, 0.5); assert.equal(store.config().dailyUsd, 0.5);
+    const archive = zip({ 'index.html': b64(`<h1>Hello</h1>${form}`) }).toString('base64');
+    await assert.rejects(store.create(user, { ...input, archive, budgetUsd: 0.51 }), /максимум сервера \$0.5/);
+    const job = await store.create(user, { ...input, archive, budgetUsd: 0.5 }); assert.equal((await finish(store, job.id)).state, 'ready');
+  } finally { store.close(); }
+});

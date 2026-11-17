@@ -33,10 +33,12 @@ try {
   await page.route('**/api/adapt/config', async route => {
     const response = await route.fetch(); await route.fulfill({ response, json: { ...await response.json(), enabled: true } });
   });
+  let imageAttempts = 0; let releaseImageSubmit; const imageSubmitGate = new Promise(resolve => { releaseImageSubmit = resolve; });
   await page.route('**/api/adapt/jobs', async route => {
     if (route.request().method() !== 'POST') return route.continue();
     const input = route.request().postDataJSON(); assert.equal(input.country, undefined); assert.equal(input.language, undefined); assert.match(input.prompt, /Испани/); assert.ok(!input.values);
-    const job = { id: input.mode === 'images' ? 'browser-images' : 'browser-ai', ownerId: qaOwner.id, mode: input.mode, partner: input.partner, country: 'Испания', language: 'es', state: 'ready', stage: 'Готово', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600000).toISOString(), reservedUsd: 0.1, files: { 'index.html': Buffer.from('<html lang="es"><body><h1>Hola Maria</h1><form action="ops-submit.php" method="post"><input name="name"><input name="phone"><button>Enviar</button></form></body></html>').toString('base64') } };
+    if (input.mode === 'images') { assert.match(input.imagePrompt, /Теплый свет/); assert.equal(Object.keys(input.imagePrompts).length, 2); assert.ok(Object.values(input.imagePrompts).some(note => note.includes('Сохранить человека'))); assert.ok(Object.values(input.imagePrompts).some(note => note.includes('Светлый фон'))); assert.equal(Number(input.budgetUsd), 0.5); await imageSubmitGate; if (++imageAttempts === 1) { await route.fulfill({ status: 400, json: { error: 'Тест: резерв превышает лимит задания' } }); return; } }
+    const job = { id: input.mode === 'images' ? 'browser-images' : 'browser-ai', ownerId: qaOwner.id, mode: input.mode, partner: input.partner, country: 'Испания', language: 'es', state: input.mode === 'images' ? 'running' : 'ready', stage: input.mode === 'images' ? 'Адаптация изображения 1/2: hero.png' : 'Готово', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600000).toISOString(), reservedUsd: 0.1, files: { 'index.html': Buffer.from('<html lang="es"><body><h1>Hola Maria</h1><form action="ops-submit.php" method="post"><input name="name"><input name="phone"><button>Enviar</button></form></body></html>').toString('base64') } };
     const fixtureDb = new DatabaseSync(join(data, 'opslands.sqlite'));
     const fixtureStorage = { db: fixtureDb, all: kind => fixtureDb.prepare('SELECT payload FROM records WHERE kind=?').all(kind).map(r => JSON.parse(r.payload)), get: (kind, id) => JSON.parse(fixtureDb.prepare('SELECT payload FROM records WHERE kind=? AND id=?').get(kind, id).payload), save: (kind, record) => fixtureDb.prepare('INSERT OR REPLACE INTO records VALUES (?,?,?)').run(kind, record.id, JSON.stringify(record)) };
     const workflows = workflowStore(fixtureStorage);
@@ -126,12 +128,31 @@ try {
   await page.locator('#adapt-form [name=prompt]').fill('Для Испании, испанский. Адаптируй выбранные изображения: светлая квартира.');
   await page.locator('#adapt-images [name=images]').first().check();
   await page.locator('#adapt-images [name=images]').last().check();
+  await page.locator('#adapt-form [name=imagePrompt]').fill('Теплый свет, единый британский стиль.');
+  await page.locator('#adapt-images [data-image-prompt]').first().fill('Сохранить человека и его одежду.');
+  await page.locator('#adapt-images [data-image-prompt]').last().fill('Светлый фон, без новых надписей.');
   await page.screenshot({path:'data/qa/adapt-image-workbench-desktop.png',fullPage:true});
   await page.setViewportSize({width:390,height:844});
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Image workbench mobile page overflows');
   await page.screenshot({path:'data/qa/adapt-image-workbench-mobile.png',fullPage:true});
   await page.locator('#adapt-images-start').click();
+  await page.locator('#adapt-images-start .loading-spinner').waitFor();
+  assert.equal(await page.locator('#adapt-images-start').getAttribute('aria-busy'), 'true');
+  assert.ok(await page.locator('#adapt-images-start').isDisabled());
+  await page.screenshot({path:'data/qa/adapt-image-submitting.png',fullPage:true});
+  releaseImageSubmit();
+  await page.locator('#adapt-form .error').filter({hasText:'резерв превышает лимит'}).waitFor();
+  assert.equal(await page.locator('#adapt-form').getAttribute('aria-busy'), null);
+  assert.equal(await page.locator('#adapt-images-start .loading-spinner').count(), 0);
+  assert.ok(await page.locator('#adapt-images-start').isEnabled());
+  assert.match(await page.locator('#adapt-images [data-image-prompt]').first().inputValue(), /Сохранить человека/);
+  await page.locator('#adapt-images-start').click();
   await page.locator('#modal').waitFor({state:'hidden'});
+  await page.locator('#mine-progress .loading-spinner').waitFor();
+  const completionDb = new DatabaseSync(join(data, 'opslands.sqlite'));
+  const activeJob = JSON.parse(completionDb.prepare('SELECT payload FROM records WHERE kind=? AND id=?').get('adaptation','browser-images').payload); activeJob.state = 'ready'; activeJob.stage = 'Готово';
+  completionDb.prepare('UPDATE records SET payload=? WHERE kind=? AND id=?').run(JSON.stringify(activeJob),'adaptation','browser-images'); completionDb.close();
+  await page.locator('#mine-progress .loading-spinner').waitFor({state:'hidden'});
   await page.setViewportSize({width:1440,height:1050});
   await page.locator('[data-view=catalog]').click();
   await page.screenshot({ path: 'data/qa/catalog-desktop.png', fullPage: true });
