@@ -2,11 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { adaptationStore, adaptationDocument, applyAdaptation, cleanText } from '../lib/adapt.mjs';
+import sharp from 'sharp';
 import { zip, unzip } from '../lib/archive.mjs';
 
+const pixel = (await sharp({create:{width:2,height:2,channels:3,background:'#445566'}}).png().toBuffer()).toString('base64');
+const generatedPixel = (await sharp({create:{width:3,height:3,channels:3,background:'#889900'}}).png().toBuffer()).toString('base64');
 const b64 = s => Buffer.from(s).toString('base64');
-const html = '<!doctype html><html lang="ru"><title>История</title><body><h1>Анна <b>дома</b> сегодня</h1><img src="images/a.png" srcset="old.png 2x" data-src="old.png" alt="Портрет"><script>const token="private-script-token";</script><form action="old.php"><input name="name" placeholder="Имя"><input name="phone" placeholder="Телефон"><input type="hidden" name="token" value="private-hidden-token"><button>Отправить</button></form><p>+7 999 123 45 67</p><p>api_key=private-visible-token</p></body></html>';
-const archive = zip({ 'index.html': b64(html), 'images/a.png': b64('original-image'), 'old.php': b64('private-php-token'), 'logs/customer.log': b64('private-personal-log'), '.env': b64('private-env-token') }).toString('base64');
+const html = '<!doctype html><html lang="ru"><title>История</title><body><h1>Анна <b>дома</b> сегодня</h1><img src="images/a.png" srcset="images/a.png 2x" data-src="images/a.png" alt="Портрет"><script>const token="private-script-token";</script><form action="old.php"><input name="name" placeholder="Имя"><input name="phone" placeholder="Телефон"><input type="hidden" name="token" value="private-hidden-token"><button>Отправить</button></form><p>+7 999 123 45 67</p><p>api_key=private-visible-token</p></body></html>';
+const archive = zip({ 'index.html': b64(html), 'images/a.png': pixel, 'old.php': b64('private-php-token'), 'logs/customer.log': b64('private-personal-log'), '.env': b64('private-env-token') }).toString('base64');
 const input = { archive, entry: 'index.html', partner: 'cashfactorie', country: 'Испания', language: 'es', prompt: 'Переведи на испанский и назови героиню Мария', budgetUsd: 0.3, images: [] };
 const user = { id: 'u1' }, other = { id: 'u2' };
 function fixture({ env = {}, fetcher } = {}) {
@@ -19,8 +22,8 @@ function fixture({ env = {}, fetcher } = {}) {
   };
   const defaultFetch = async (url, options) => {
     const body = options.body ? JSON.parse(options.body) : null; calls.push({ url, body });
-    if (url.endsWith('/endpoints')) return Response.json({ endpoints: [{ provider_tag: 'seed', pricing: [{ billable: 'output_image', unit: 'image', cost_usd: 0.04 }] }] });
-    if (url.endsWith('/images')) return Response.json({ data: [{ b64_json: Buffer.from([137,80,78,71,13,10,26,10,0]).toString('base64') }], usage: { cost: 0.04 } });
+    if (url.endsWith('/endpoints')) return Response.json({ endpoints: [{ provider_tag: 'seed', supported_parameters: { input_references: { max: 1 } }, pricing: [{ billable: 'output_image', unit: 'image', cost_usd: 0.04 }] }] });
+    if (url.endsWith('/images')) return Response.json({ data: [{ b64_json: generatedPixel }], usage: { cost: 0.04 } });
     const data = JSON.parse(body.messages[1].content);
     return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ texts: data.texts.map(t => ({ ...t, text: `ES ${t.text}` })) }) } }], usage: { cost: 0.001 } });
   };
@@ -45,8 +48,8 @@ test('AI allowlist excludes executable code, hidden credentials, contacts and lo
     const files = store.files(user, job.id), result = Buffer.from(files['index.html'], 'base64').toString();
     assert.match(result, /ES Анна <b>ES дома<\/b> ES сегодня/);
     assert.match(result, /lang="es"/); assert.match(result, /action="ops-submit.php" method="post"/);
-    assert.doesNotMatch(result, /srcset=/); assert.match(result, /data-src="ops-ai-/);
-    assert.equal(files['images/a.png'], b64('original-image'));
+    assert.match(result, /srcset="images\/a.png 2x"/); assert.match(result, /data-src="images\/a.png"/);
+    assert.notEqual(files['images/a.png'], pixel); assert.equal((await sharp(Buffer.from(files['images/a.png'], 'base64')).metadata()).width, 2);
     assert.ok(!files['ops-config.php']); assert.ok(!files['old.php']);
     assert.throws(() => store.files(other, job.id), /не найдено/);
     assert.equal(store.list(other).length, 0);
@@ -66,7 +69,7 @@ test('AI allowlist excludes executable code, hidden credentials, contacts and lo
 });
 
 test('budget and configured models are validated before paid calls; daily reservations survive restart', async () => {
-  const { store, calls, options } = fixture({ env: { OPSLANDS_AI_DAILY_USD: '0.1' } });
+  const { store, calls, options } = fixture({ env: { OPSLANDS_AI_DAILY_USD: '0.06' } });
   try {
     await assert.rejects(store.create(user, { ...input, budgetUsd: 0.001 }), /Резерв/);
     await assert.rejects(store.create(user, { ...input, textModel: 'unapproved/model' }), /не разрешена/);
@@ -82,7 +85,7 @@ test('malformed/truncated provider responses fail closed with no retry or image 
   for (const content of ['not JSON', JSON.stringify({ texts: [] })]) {
     let calls = 0;
     const { store } = fixture({ fetcher: async url => {
-      if (url.endsWith('/endpoints')) return Response.json({ endpoints: [{ provider_tag: 'seed', pricing: [{ billable: 'output_image', unit: 'image', cost_usd: 0.04 }] }] });
+      if (url.endsWith('/endpoints')) return Response.json({ endpoints: [{ provider_tag: 'seed', supported_parameters: { input_references: { max: 1 } }, pricing: [{ billable: 'output_image', unit: 'image', cost_usd: 0.04 }] }] });
       calls++; return Response.json({ choices: [{ finish_reason: 'stop', message: { content } }] });
     } });
     try {
@@ -115,24 +118,24 @@ test('a charged response rejected by validation still reports known cost without
   try {
     const job = await store.create(user, input), status = await completed(store, job.id);
     assert.equal(status.state, 'failed'); assert.equal(status.costUsd, 0.003);
-    assert.match(status.error, /t0: признаки/); assert.doesNotMatch(status.error, /do-not-publish/);
+    assert.match(status.error, /t0:.*признаки/); assert.doesNotMatch(status.error, /do-not-publish/);
   } finally { store.close(); }
 });
 
-test('alternate model choices and tiered fixed image prices keep optional reference charges out of requests', async () => {
+test('alternate model choices and tiered fixed image prices reserve reference charges while stripping reference metadata', async () => {
   const imageRequests = [];
   const { store } = fixture({ fetcher: async (url, options) => {
-    if (url.endsWith('/endpoints')) return Response.json({ endpoints: [{ provider_tag: 'sourceful', pricing: [{ billable: 'output_image', unit: 'image', cost_usd: 0.02 }, { billable: 'output_image', unit: 'image', cost_usd: 0.04, variant: '2k' }, { billable: 'input_font', unit: 'image', cost_usd: 0.03 }, { billable: 'input_reference', unit: 'image', cost_usd: 0.2 }] }] });
+    if (url.endsWith('/endpoints')) return Response.json({ endpoints: [{ provider_tag: 'sourceful', supported_parameters: { input_references: { max: 1 } }, pricing: [{ billable: 'output_image', unit: 'image', cost_usd: 0.02 }, { billable: 'output_image', unit: 'image', cost_usd: 0.04, variant: '2k' }, { billable: 'input_font', unit: 'image', cost_usd: 0.03 }, { billable: 'input_reference', unit: 'image', cost_usd: 0.2 }] }] });
     const body = JSON.parse(options.body);
-    if (url.endsWith('/images')) { imageRequests.push(body); return Response.json({ data: [{ b64_json: Buffer.from([137,80,78,71,13,10,26,10,0]).toString('base64') }] }); }
+    if (url.endsWith('/images')) { imageRequests.push(body); return Response.json({ data: [{ b64_json: generatedPixel }] }); }
     return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ texts: JSON.parse(body.messages[1].content).texts }) } }] });
   } });
   try {
     assert.ok(store.config().textModels.includes('deepseek/deepseek-v3.2'));
-    const job = await store.create(user, { ...input, textModel: 'qwen/qwen3-235b-a22b-2507', imageModel: 'sourceful/riverflow-v2-fast', images: ['i0'] });
+    const job = await store.create(user, { ...input, textModel: 'qwen/qwen3-235b-a22b-2507', imageModel: 'sourceful/riverflow-v2-fast', images: ['i0'], budgetUsd: 0.5 });
     assert.equal((await completed(store, job.id)).state, 'ready'); assert.equal(imageRequests.length, 1);
-    assert.ok(!imageRequests[0].input_references); assert.ok(!imageRequests[0].font_inputs);
-    assert.ok(job.reservedUsd >= 0.06 && job.reservedUsd <= input.budgetUsd);
+    assert.equal(imageRequests[0].input_references.length, 1); assert.ok(!imageRequests[0].font_inputs);
+    assert.ok(job.reservedUsd >= 0.26 && job.reservedUsd <= 0.5);
   } finally { store.close(); }
 });
 

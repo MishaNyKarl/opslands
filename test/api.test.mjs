@@ -62,6 +62,8 @@ test('persistent catalog, custom partner, version creation, asset import and rea
     assert.ok(preparedSaved.parentId);
     const savedPrepared = await (await request(`/api/landings/${preparedSaved.id}`)).json();
     assert.ok(!savedPrepared.files['ops-config.php']);
+    const inspectedBase = await request('/api/adapt/inspect', { baseLandingId: preparedSaved.id, partner: 'lemonad' });
+    assert.equal(inspectedBase.status, 200); assert.ok((await inspectedBase.json()).diagnostics);
     const again = await request(`/api/landings/${preparedSaved.id}/workflow-download`, { values: { token: 'download-only', offer: '1' } });
     assert.equal(again.status, 200); assert.ok(unzip(Buffer.from(await again.arrayBuffer()))['ops-config.php']);
     await request('/api/admin/users', { name: 'Other', login: 'other-reader', password: 'other-password', role: 'member' });
@@ -70,6 +72,10 @@ test('persistent catalog, custom partner, version creation, asset import and rea
     const deniedDownload = await fetch(`${base}/api/landings/${preparedSaved.id}/workflow-download`, { method: 'POST', headers: { Cookie: otherCookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ values: { token: 'x', offer: '1' } }) });
     assert.equal(deniedDownload.status, 404);
     assert.equal((await fetch(`${base}/preview/${preparedSaved.parentId}/index.html`, { headers: { Cookie: otherCookie } })).status, 404);
+    for (const path of ['/api/adapt/inspect', '/api/adapt/jobs']) {
+      const deniedBase = await fetch(base + path, { method: 'POST', headers: { Cookie: otherCookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ baseLandingId: preparedSaved.id, partner: 'lemonad', prompt: 'Для Турции', mode: 'images' }) });
+      assert.equal(deniedBase.status, 404);
+    }
     const partner = await (await request('/api/partners', { name: 'Test PP', method: 'POST', fields: [{ key: 'campaign', target: 'offer', label: 'Campaign', type: 'text', required: true }] })).json();
     const source = await (await request('/api/landings/story')).json();
     const modified = Buffer.from(source.files['index.html'], 'base64').toString().replace('Маленькие привычки.', 'Новый заголовок.');

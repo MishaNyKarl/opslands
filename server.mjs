@@ -27,13 +27,26 @@ const auth = authStore({ all, get, save, remove, db });
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS sso_identity ON records(json_extract(payload,'$.sso.issuer'),json_extract(payload,'$.sso.subject')) WHERE kind='user' AND json_extract(payload,'$.sso.subject') IS NOT NULL");
 const sso = ssoStore({ all, get, save, remove, db, auth });
 const workflows = workflowStore({ all, get, save, db });
-const adaptations = adaptationStore({ all, get, save, remove, onSource: workflows.source, onResult: workflows.adapted });
+const adaptations = adaptationStore({ all, get, save, remove, onSource: (user, prepared, input) => {
+  if (input.baseLandingId) {
+    const base = requireLanding(user, get('landing', input.baseLandingId));
+    if (base.ownerId === user.id && base.workflow?.sourceId) { const source = get('landing', base.workflow.sourceId); if (source.ownerId === user.id) return source; }
+  }
+  return workflows.source(user, prepared, input);
+}, onResult: workflows.adapted });
 workflows.recover();
 if (!all('landing').length) for (const landing of seeds()) save('landing', landing);
 if (!all('partner').length) save('partner', { id: 'generic', name: 'Универсальная форма', description: 'Прямое подключение к HTTP(S) обработчику. Поля заявки: name и phone. Для API с серверной авторизацией нужен отдельный адаптер.', method: 'POST', fields: [{ key: 'offer_id', target: 'offer_id', label: 'ID оффера', type: 'text', required: true }, { key: 'subid', target: 'subid', label: 'Sub ID', type: 'text', required: false }] });
 
 const summary = ({ files, ...rest }) => ({ ...rest, fileCount: Object.keys(files).length, size: Object.values(files).reduce((n, b) => n + Buffer.from(b, 'base64').length, 0), ready: ['{{form_action}}', '{{form_method}}', '{{hidden_fields}}'].every(t => Buffer.from(files[rest.entry], 'base64').toString().includes(t)) });
 const json = (res, value, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
+function adaptationInput(user, input) {
+  if (!input.baseLandingId) return { ...input, inheritedLocale: undefined };
+  const landing = requireLanding(user, get('landing', String(input.baseLandingId)));
+  const files = { ...landing.files }; delete files['ops-config.php'];
+  if (files['index.html']) files['index.html'] = Buffer.from(Buffer.from(files['index.html'], 'base64').toString().replaceAll('<script src="ops-tracking.js" defer></script>', '')).toString('base64');
+  return { ...input, archive: zip(files).toString('base64'), entry: landing.entry, partner: input.partner || landing.workflow?.partner, name: landing.name, inheritedLocale: { country: landing.workflow?.country || '', language: landing.workflow?.language || '' } };
+}
 async function body(req) {
   let size = 0; const chunks = [];
   for await (const c of req) { size += c.length; if (size > 30 * 1024 * 1024) throw new Error('Загрузка превышает 30 МБ'); chunks.push(c); }
@@ -95,9 +108,9 @@ const server = http.createServer(async (req, res) => {
     if ((path.startsWith('/api/') || path.startsWith('/preview/')) && !user) return json(res, { error: 'Войдите в учетную запись' }, 401);
     if (path === '/api/auth/logout' && req.method === 'POST') { auth.logout(req, res); return json(res, { ok: true }); }
     if (path === '/api/adapt/config' && req.method === 'GET') return json(res, adaptations.config());
-    if (path === '/api/adapt/inspect' && req.method === 'POST') return json(res, { images: adaptations.inspect(await body(req)) });
+    if (path === '/api/adapt/inspect' && req.method === 'POST') return json(res, await adaptations.inspect(adaptationInput(user, await body(req))));
     if (path === '/api/adapt/jobs' && req.method === 'GET') return json(res, { jobs: adaptations.list(user) });
-    if (path === '/api/adapt/jobs' && req.method === 'POST') return json(res, await adaptations.create(user, await body(req)), 202);
+    if (path === '/api/adapt/jobs' && req.method === 'POST') return json(res, await adaptations.create(user, adaptationInput(user, await body(req))), 202);
     const adaptation = path.match(/^\/api\/adapt\/jobs\/([^/]+)(?:\/(cancel|download|preview)(?:\/(.+))?)?$/);
     if (adaptation) {
       const [, id, action, asset] = adaptation;
