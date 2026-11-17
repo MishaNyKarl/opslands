@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { unzip, zip } from '../lib/archive.mjs';
+import { DatabaseSync } from 'node:sqlite';
 
 const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
 const data = mkdtempSync(join(tmpdir(), 'opslands-browser-')), port = 41000 + Math.floor(Math.random() * 1000);
@@ -24,12 +25,48 @@ try {
   await page.getByRole('button', { name: 'Создать и войти' }).click();
   await page.locator('.card').first().waitFor();
   assert.equal(await page.locator('.card').count(), 3);
+  // Provider work is mocked; preview and ZIP use the real authenticated HTTP routes.
+  const qaOwner = (await (await page.request.get(`http://127.0.0.1:${port}/api/auth/me`)).json()).user;
+  await page.route('**/api/adapt/config', async route => {
+    const response = await route.fetch(); await route.fulfill({ response, json: { ...await response.json(), enabled: true } });
+  });
+  await page.route('**/api/adapt/jobs', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    const input = route.request().postDataJSON(); assert.equal(input.country, 'Испания'); assert.equal(input.language, 'es'); assert.ok(!input.values);
+    const job = { id: 'browser-ai', ownerId: qaOwner.id, partner: input.partner, country: input.country, language: input.language, state: 'ready', stage: 'Готово', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600000).toISOString(), reservedUsd: 0.1, files: { 'index.html': Buffer.from('<html lang="es"><body><h1>Hola Maria</h1><form action="ops-submit.php" method="post"><input name="name"><input name="phone"><button>Enviar</button></form></body></html>').toString('base64') } };
+    const fixtureDb = new DatabaseSync(join(data, 'opslands.sqlite')); fixtureDb.prepare('INSERT INTO records VALUES (?,?,?)').run('adaptation', job.id, JSON.stringify(job)); fixtureDb.close();
+    await route.fulfill({ status: 202, json: { id: job.id, state: job.state } });
+  });
   mkdirSync('data/qa', { recursive: true });
   assert.equal(await page.locator('[data-view=popular]').count(), 0);
   await page.locator('[data-view=prepare]').click();
-  const preparationArchive = zip({ 'index.php': Buffer.from('<form action="cash.php"><input name="name"><input name="phone"></form>').toString('base64') });
+  const preparationArchive = zip({ 'index.php': Buffer.from('<h1>История Анны</h1><img src="hero.png" alt="Портрет"><form action="cash.php"><input name="name"><input name="phone"><button>Отправить</button></form>').toString('base64') });
   await page.locator('#prepare-form [name=archive]').setInputFiles({ name: 'landing.zip', mimeType: 'application/zip', buffer: preparationArchive });
   await page.locator('#inspect-landing').click();
+  await page.locator('#adapt-form').waitFor();
+  await page.screenshot({ path: 'data/qa/adapt-prompt-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'AI prompt mobile page overflows');
+  await page.screenshot({ path: 'data/qa/adapt-prompt-mobile.png', fullPage: true });
+  await page.locator('#adapt-form [name=country]').fill('Испания');
+  await page.locator('#adapt-form [name=language]').fill('es');
+  await page.locator('#adapt-form [name=prompt]').fill('Переведи на испанский. Героиня — Мария.');
+  await page.locator('#adapt-start').click();
+  await page.locator('[data-adapt-preview=browser-ai]').click();
+  await page.frameLocator('#adapt-download-form iframe').getByText('Hola Maria').waitFor();
+  await page.screenshot({ path: 'data/qa/adapt-result-mobile.png', fullPage: true });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'AI result mobile page overflows');
+  await page.locator('#adapt-download-form [name=token]').fill('qa-ai-secret');
+  await page.locator('#adapt-download-form [name=offer]').fill('123');
+  await page.locator('#adapt-download-form [name=flow]').fill('456');
+  const aiPending = page.waitForEvent('download');
+  await page.locator('#adapt-download-form button.primary').click();
+  const aiFiles = unzip(readFileSync(await (await aiPending).path()));
+  assert.match(Buffer.from(aiFiles['index.html'], 'base64').toString(), /Hola Maria/);
+  assert.ok(aiFiles['ops-submit.php']); assert.ok(aiFiles['ops-config.php']);
+  assert.equal(await page.locator('#adapt-download-form [name=token]').inputValue(), '');
+  await page.locator('#adapt-preview-close').click();
+  await page.setViewportSize({ width: 1440, height: 1050 });
   await page.locator('#prepare-form [name=partner]').selectOption('cashfactorie');
   await page.locator('#prepare-form [name=token]').fill('qa-secret');
   await page.locator('#prepare-form [name=offer]').fill('123');

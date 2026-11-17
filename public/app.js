@@ -33,7 +33,7 @@ function render() {
   $('#add-main').innerHTML = `${icon('plus')} ${state.view === 'partners' ? 'Добавить партнерку' : 'Добавить ленд'}`;
   $('#add-main').hidden = state.view === 'partners' && account.role !== 'admin';
   if (state.view === 'admin') { $('#add-main').innerHTML = `${icon('plus')} Создать пользователя`; $('#page-description').textContent = 'Все пользователи и ленды команды, включая личные и неопубликованные.'; renderAdmin().catch(e => toast(e.message)); return; }
-  if (state.view === 'prepare') { $('#add-main').hidden = true; $('#page-description').textContent = 'Загрузите ZIP, выберите партнерку и получите готовый архив.'; return renderPreparation(); }
+  if (state.view === 'prepare') { $('#add-main').hidden = true; $('#page-description').textContent = 'Загрузите ZIP, задайте страну, язык и пожелания. Получите адаптированный ленд с рабочими формами.'; return renderPreparation(); }
   if (state.view === 'partners') return renderPartners();
   const types = [...new Set(state.landings.map(l => l.type))].sort(), languages = [...new Set(state.landings.map(l => l.language))].sort();
   content.innerHTML = `<div class="toolbar"><label class="search"><span>${icon('search')}</span><input id="search" aria-label="Поиск ленда" placeholder="Найти ленд, тип или автора…" value="${esc(state.query)}"></label><select id="type-filter" aria-label="Тип"><option value="">Все типы</option>${types.map(t => `<option ${state.type === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select><select id="language-filter" aria-label="Язык"><option value="">Все языки</option>${languages.map(t => `<option ${state.language === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select><select id="sort" class="sort" aria-label="Сортировка"><option value="new">Сначала новые</option><option value="downloads">По скачиваниям</option><option value="changes">По изменениям</option></select></div><div class="section-label"><strong id="result-label"></strong><span>ШАБЛОН → ПАРТНЕРКА → ZIP</span></div><div class="grid" id="grid"></div><div class="hint"><span>${icon('arrow-up-right')}</span><div><b>Хорошие ленды работают снова.</b> Сохраните свой вариант в библиотеку — команда сможет использовать его в следующем запуске.</div></div>`;
@@ -79,7 +79,8 @@ async function openBuild(id) {
 }
 async function base64(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = () => reject(new Error('Не удалось прочитать файл')); reader.readAsDataURL(file); }); }
 function renderPreparation() {
-  content.innerHTML = `<form id="prepare-form" class="prepare-panel fields"><div class="section-label"><strong>01 ЗАГРУЗКА → 02 ПАРТНЕРКА → 03 ГОТОВЫЙ ZIP</strong></div><label>Архив ленда<input name="archive" type="file" accept=".zip" required><small>До 20 МБ. Можно загрузить архив с несколькими лендами и выбрать нужный.</small></label><button class="secondary" type="button" id="inspect-landing">Продолжить ${icon('arrow-up-right')}</button><div id="prepare-options" hidden></div><div class="error" role="alert"></div><p id="prepare-status" role="status"></p></form>`;
+  content.innerHTML = `<form id="prepare-form" class="prepare-panel fields"><div class="section-label"><strong>01 ZIP → 02 ИИ-АДАПТАЦИЯ → 03 ГОТОВЫЙ ЛЕНД</strong></div><label>Архив ленда<input name="archive" type="file" accept=".zip" required><small>До 20 МБ. Можно загрузить архив с несколькими лендами и выбрать нужный.</small></label><button class="secondary" type="button" id="inspect-landing">Продолжить ${icon('arrow-up-right')}</button><div id="prepare-options" hidden></div><div class="error" role="alert"></div><p id="prepare-status" role="status"></p></form><div id="adapt-jobs" class="prepare-panel fields" aria-live="polite"></div>`;
+  refreshAdaptations().catch(e => toast(e.message));
   const form = $('#prepare-form'); let archive = null;
   const reset = () => { archive = null; $('#prepare-options').hidden = true; $('#prepare-options').innerHTML = ''; $('#prepare-status').textContent = ''; };
   form.elements.archive.onchange = reset;
@@ -98,6 +99,9 @@ function renderPreparation() {
         $('#prepare-values').innerHTML = partner ? partner.fields.map(key => `<label>${{ token: 'Токен вебмастера', offer: 'ID оффера', flow: 'ID потока' }[key]} *<input name="${key}" type="${key === 'token' ? 'password' : 'text'}" required maxlength="500" autocomplete="off"></label>`).join('') : '';
         $('#prepare-download').disabled = !partner;
       };
+      const adaptButton = document.createElement('button'); adaptButton.type = 'button'; adaptButton.className = 'secondary'; adaptButton.textContent = 'Адаптировать с ИИ';
+      adaptButton.onclick = () => openAdaptation(archive, form.elements.entry.value, result.partners).catch(err => error(form, err)); options.prepend(adaptButton);
+      await openAdaptation(archive, form.elements.entry.value, result.partners, result.candidates);
     } catch (err) { error(form, err); } finally { e.target.disabled = false; }
   };
   form.onsubmit = async e => {
@@ -110,6 +114,55 @@ function renderPreparation() {
       const url = URL.createObjectURL(await res.blob()), a = document.createElement('a'); a.href = url; a.download = `opslands-${form.elements.partner.value}.zip`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000);
       form.elements.token.value = ''; $('#prepare-status').textContent = 'Архив готов. Скачивание началось. Параметры и токен не сохранены в библиотеке.';
     } catch (err) { $('#prepare-status').textContent = ''; error(form, err); } finally { button.disabled = false; }
+  };
+}
+let adaptationPoll;
+async function refreshAdaptations() {
+  clearTimeout(adaptationPoll);
+  const container = $('#adapt-jobs'); if (!container) return;
+  const { jobs } = await api('/api/adapt/jobs'); if (!container.isConnected) return;
+  container.innerHTML = '<h2>Мои ИИ-адаптации</h2>' + (jobs.length ? jobs.map(j => `<article class="info-box"><strong>${esc(j.country)} · ${esc(j.language)}</strong><p>${esc(j.stage)} · резерв $${j.reservedUsd.toFixed(3)}${j.costUsd !== undefined ? ` · расход $${j.costUsd.toFixed(3)}` : ''}</p>${j.error ? `<p>${esc(j.error)}</p>` : ''}${j.state === 'ready' ? `<button type="button" class="secondary" data-adapt-preview="${j.id}">Предпросмотр и ZIP</button>` : ['queued', 'running'].includes(j.state) ? `<button type="button" class="secondary" data-adapt-cancel="${j.id}">Отменить</button>` : ''}</article>`).join('') : '<p class="subtitle">Здесь появится результат адаптации. Можно закрыть окно и вернуться позже. Результаты хранятся 24 часа.</p>');
+  container.querySelectorAll('[data-adapt-preview]').forEach(b => b.onclick = () => previewAdaptation(b.dataset.adaptPreview).catch(e => toast(e.message)));
+  container.querySelectorAll('[data-adapt-cancel]').forEach(b => b.onclick = async () => { try { await api(`/api/adapt/jobs/${b.dataset.adaptCancel}/cancel`, {}); await refreshAdaptations(); } catch (e) { toast(e.message); } });
+  if (jobs.some(j => ['queued', 'running'].includes(j.state))) adaptationPoll = setTimeout(() => refreshAdaptations().catch(e => toast(e.message)), 2000);
+}
+async function openAdaptation(archive, entry, partners, candidates = [{ entry, name: entry }]) {
+  const config = await api('/api/adapt/config');
+  showModal(`<form id="adapt-form" class="modal-content fields"><h2>Адаптировать ленд с ИИ</h2><p class="subtitle">Задайте страну, язык и изменения героя, текста или изображений.</p><label>Ленд<select name="entry">${candidates.map(c => `<option value="${esc(c.entry)}">${esc(c.name)}</option>`).join('')}</select></label><label>Партнерка для форм<select name="partner">${partners.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label><div class="two"><label>Страна<input name="country" required maxlength="80" placeholder="Испания"></label><label>Код языка<input name="language" required maxlength="40" pattern="[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*" placeholder="es"></label></div><label>Ваши пожелания<textarea name="prompt" required maxlength="2000" placeholder="Переведи на испанский. Главная героиня — Мария из Мадрида. Адаптируй валюту и стиль текста."></textarea></label><label>Текстовая модель<select name="textModel">${config.textModels.map(m => `<option>${esc(m)}</option>`).join('')}</select></label><label>Модель изображений<select name="imageModel">${config.imageModels.map(m => `<option>${esc(m)}</option>`).join('')}</select></label><fieldset class="fields"><legend>Заменить изображения (до 3)</legend><div id="adapt-images">Проверяем страницу…</div><small>Создаются новые картинки по описанию. Исходные изображения не отправляются провайдеру. Поддерживаются обычные img; фоновые картинки и picture меняются вручную.</small></fieldset><label>Лимит задания, USD<input name="budgetUsd" type="number" min="0.01" max="${config.maxJobUsd}" step="0.01" value="${Math.min(0.3, config.maxJobUsd)}" required></label><div class="info-box">${config.enabled ? `Суточный лимит команды: $${config.dailyUsd}. До запуска резервируется консервативная оценка расходов. Неудачные и отмененные задания тоже занимают резерв. Повторов нет.` : 'ИИ пока не настроен: администратор должен задать OPENROUTER_API_KEY на сервере.'}<br>В OpenRouter отправляются очищенные тексты страницы и ваши пожелания. Не вводите секреты и персональные данные. Формы и ресурсы сохраняются. Проверьте результат перед запуском.</div><div class="error" role="alert"></div><div class="modal-actions"><button type="button" class="secondary" id="adapt-skip">Продолжить без ИИ</button><button class="primary" id="adapt-start" ${config.enabled ? '' : 'disabled'}>Начать адаптацию</button></div></form>`, 'OPSLANDS / ИИ-АДАПТАЦИЯ');
+  const form = $('#adapt-form'); form.elements.entry.value = entry;
+  let inspecting = false, generation = 0;
+  const inspect = async () => {
+    const version = ++generation; inspecting = true; $('#adapt-start').disabled = true;
+    try {
+      const result = await api('/api/adapt/inspect', { archive, entry: form.elements.entry.value, partner: form.elements.partner.value });
+      if (version !== generation || !form.isConnected) return;
+      $('#adapt-images').innerHTML = result.images.map(i => `<label><span><input type="checkbox" name="images" value="${i.id}"> ${i.thumbnail ? `<img src="${esc(i.thumbnail)}" alt="">` : ''}<span>${esc(i.label)}<small>${esc(i.source)}</small></span></span></label>`).join('') || '<p>Изображений img для замены нет.</p>';
+      inspecting = false; $('#adapt-start').disabled = !config.enabled;
+    } catch (e) { if (version === generation && form.isConnected) error(form, e); }
+  };
+  form.elements.entry.onchange = inspect; form.elements.partner.onchange = inspect;
+  $('#adapt-skip').onclick = () => modal.close();
+  form.onsubmit = async e => {
+    e.preventDefault(); if (inspecting) return;
+    const button = $('#adapt-start'); button.disabled = true;
+    try {
+      const values = Object.fromEntries(new FormData(form)); values.images = [...form.querySelectorAll('[name=images]:checked')].map(n => n.value);
+      await api('/api/adapt/jobs', { ...values, archive }); modal.close(); toast('Задание запущено. Результат появится в списке адаптаций.'); await refreshAdaptations();
+    } catch (e) { if (form.isConnected) { error(form, e); button.disabled = false; } }
+  };
+  await inspect();
+}
+async function previewAdaptation(id) {
+  const job = await api(`/api/adapt/jobs/${id}`);
+  showModal(`<form class="modal-content fields" id="adapt-download-form"><h2>${esc(job.country)} · ${esc(job.language)}</h2><div class="build-preview"><iframe sandbox="allow-same-origin" src="/api/adapt/jobs/${id}/preview/index.html" title="Предпросмотр ИИ-адаптации"></iframe></div><p class="subtitle">Скрипты и отправка форм в предпросмотре отключены. Проверьте тексты, картинки и тестовую заявку на PHP-хостинге. Результат хранится до ${esc(new Date(job.expiresAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }))} МСК.</p><label>Токен партнерки<input name="token" type="password" required maxlength="500" autocomplete="off"></label><label>ID оффера<input name="offer" required maxlength="500"></label>${job.partner === 'cashfactorie' ? '<label>ID потока Cashfactorie<input name="flow" required maxlength="500"></label>' : ''}<div class="info-box">Реквизиты добавляются в PHP-конфигурацию скачанного ZIP. Они не сохраняются в задании и не отправляются модели.</div><div class="error" role="alert"></div><div class="modal-actions"><button type="button" class="secondary" id="adapt-preview-close">Закрыть</button><button class="primary">Скачать ZIP</button></div></form>`, 'OPSLANDS / РЕЗУЛЬТАТ');
+  const form = $('#adapt-download-form'); $('#adapt-preview-close').onclick = () => modal.close();
+  form.onsubmit = async e => {
+    e.preventDefault(); const button = $('button.primary', form); button.disabled = true;
+    try {
+      const response = await fetch(`/api/adapt/jobs/${id}/download`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: Object.fromEntries(new FormData(form)) }) });
+      if (!response.ok) throw new Error((await response.json()).error);
+      const url = URL.createObjectURL(await response.blob()), a = document.createElement('a'); a.href = url; a.download = 'opslands-ai.zip'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000); form.elements.token.value = ''; toast('Архив готов. Проверьте форму на хостинге.');
+    } catch (e) { error(form, e); } finally { button.disabled = false; }
   };
 }
 async function openEditor(id) {

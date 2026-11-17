@@ -10,6 +10,7 @@ import { seeds } from './lib/seeds.mjs';
 import { authStore, publicUser, requireAdmin, canRead, requireLanding, requireOwner } from './lib/auth.mjs';
 import { ssoStore } from './lib/sso.mjs';
 import { inspectPreparation, prepareLanding } from './lib/prepare.mjs';
+import { adaptationStore } from './lib/adapt.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const externalOrigin = process.env.OPSLANDS_ORIGIN ? new URL(process.env.OPSLANDS_ORIGIN).origin : null;
@@ -24,6 +25,7 @@ const remove = (kind, id) => db.prepare('DELETE FROM records WHERE kind=? AND id
 const auth = authStore({ all, get, save, remove, db });
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS sso_identity ON records(json_extract(payload,'$.sso.issuer'),json_extract(payload,'$.sso.subject')) WHERE kind='user' AND json_extract(payload,'$.sso.subject') IS NOT NULL");
 const sso = ssoStore({ all, get, save, remove, db, auth });
+const adaptations = adaptationStore({ all, get, save, remove });
 if (!all('landing').length) for (const landing of seeds()) save('landing', landing);
 if (!all('partner').length) save('partner', { id: 'generic', name: 'Универсальная форма', description: 'Прямое подключение к HTTP(S) обработчику. Поля заявки: name и phone. Для API с серверной авторизацией нужен отдельный адаптер.', method: 'POST', fields: [{ key: 'offer_id', target: 'offer_id', label: 'ID оффера', type: 'text', required: true }, { key: 'subid', target: 'subid', label: 'Sub ID', type: 'text', required: false }] });
 
@@ -88,6 +90,27 @@ const server = http.createServer(async (req, res) => {
     if (path === '/auth/opsvault/logout' && req.method === 'POST') { if (!user) return json(res, { error: 'Войдите в аккаунт' }, 401); await body(req); await sso.globalLogout(req, res, user); return json(res, { ok: true }); }
     if ((path.startsWith('/api/') || path.startsWith('/preview/')) && !user) return json(res, { error: 'Войдите в учетную запись' }, 401);
     if (path === '/api/auth/logout' && req.method === 'POST') { auth.logout(req, res); return json(res, { ok: true }); }
+    if (path === '/api/adapt/config' && req.method === 'GET') return json(res, adaptations.config());
+    if (path === '/api/adapt/inspect' && req.method === 'POST') return json(res, { images: adaptations.inspect(await body(req)) });
+    if (path === '/api/adapt/jobs' && req.method === 'GET') return json(res, { jobs: adaptations.list(user) });
+    if (path === '/api/adapt/jobs' && req.method === 'POST') return json(res, await adaptations.create(user, await body(req)), 202);
+    const adaptation = path.match(/^\/api\/adapt\/jobs\/([^/]+)(?:\/(cancel|download|preview)(?:\/(.+))?)?$/);
+    if (adaptation) {
+      const [, id, action, asset] = adaptation;
+      if (!action && req.method === 'GET') return json(res, adaptations.status(user, id));
+      if (action === 'cancel' && req.method === 'POST') { await body(req); return json(res, adaptations.cancel(user, id)); }
+      if (action === 'download' && req.method === 'POST') {
+        const archive = adaptations.download(user, id, await body(req));
+        res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="opslands-ai.zip"', 'Cache-Control': 'no-store' }); return res.end(archive);
+      }
+      if (action === 'preview' && asset && req.method === 'GET') {
+        const files = adaptations.files(user, id), filename = safePath(decodeURIComponent(asset));
+        const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.gif': 'image/gif', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf' }[extname(filename).toLowerCase()];
+        if (!mime || !Object.hasOwn(files, filename)) return json(res, { error: 'Файл не найден' }, 404);
+        res.setHeader('Content-Security-Policy', "sandbox allow-same-origin; default-src 'none'; style-src 'unsafe-inline' 'self'; img-src data: 'self'; font-src data: 'self'; form-action 'none'; base-uri 'none'");
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-store' }); return res.end(Buffer.from(files[filename], 'base64'));
+      }
+    }
     if (path === '/api/prepare/inspect' && req.method === 'POST') return json(res, inspectPreparation((await body(req)).archive));
     if (path === '/api/prepare/build' && req.method === 'POST') {
       const prepared = prepareLanding(await body(req));
@@ -148,4 +171,4 @@ const server = http.createServer(async (req, res) => {
 });
 const port = Number(process.env.PORT || 3000);
 server.listen(port, '127.0.0.1', () => console.log(`OPSLands: http://127.0.0.1:${port}`));
-for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close(() => { db.close(); process.exit(0); }));
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { adaptations.close(); server.close(() => { db.close(); process.exit(0); }); });

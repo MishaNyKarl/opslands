@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
 import { unzip, zip } from '../lib/archive.mjs';
 
 test('persistent catalog, custom partner, version creation, asset import and real download', async () => {
@@ -28,8 +29,27 @@ test('persistent catalog, custom partner, version creation, asset import and rea
   }
   try {
     await start();
+    assert.equal((await request('/api/adapt/jobs')).status, 401);
+    assert.equal((await request('/api/adapt/config')).status, 401);
     assert.equal((await request('/api/prepare/inspect', { archive: '' })).status, 401);
-    assert.equal((await request('/api/auth/setup', { name: 'Tester', login: 'tester', password: 'test-password' })).status, 201);
+    const setup = await request('/api/auth/setup', { name: 'Tester', login: 'tester', password: 'test-password' });
+    assert.equal(setup.status, 201); const owner = (await setup.json()).user;
+    const aiConfig = await (await request('/api/adapt/config')).json();
+    assert.ok(!JSON.stringify(aiConfig).includes('OPENROUTER_API_KEY'));
+    assert.deepEqual((await (await request('/api/adapt/jobs')).json()).jobs, []);
+    // Seed a completed synthetic result to exercise HTTP delivery without any provider charges.
+    const aiJob = { id: 'fixture-ai', ownerId: owner.id, partner: 'lemonad', state: 'ready', stage: 'Готово', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600000).toISOString(), reservedUsd: 0.1, files: { 'index.html': Buffer.from('<html><body><h1>Hola</h1><form action="ops-submit.php" method="post"><input name="name"><input name="phone"></form></body></html>').toString('base64'), 'ops-config.php': Buffer.from('never-serve-config').toString('base64') } };
+    const fixtureDb = new DatabaseSync(join(data, 'opslands.sqlite'));
+    fixtureDb.prepare('INSERT INTO records VALUES (?,?,?)').run('adaptation', aiJob.id, JSON.stringify(aiJob));
+    fixtureDb.prepare('INSERT INTO records VALUES (?,?,?)').run('adaptation', 'another-owner', JSON.stringify({ ...aiJob, id: 'another-owner', ownerId: 'someone-else' })); fixtureDb.close();
+    const aiPreview = await request('/api/adapt/jobs/fixture-ai/preview/index.html');
+    assert.equal(aiPreview.status, 200); assert.match(aiPreview.headers.get('content-security-policy'), /sandbox/);
+    assert.match(await aiPreview.text(), /Hola/);
+    assert.equal((await request('/api/adapt/jobs/fixture-ai/preview/ops-config.php')).status, 404);
+    for (const suffix of ['', '/preview/index.html', '/download', '/cancel']) assert.equal((await request('/api/adapt/jobs/another-owner' + suffix, ['/download', '/cancel'].includes(suffix) ? {} : undefined)).status, 404);
+    assert.equal((await request('/api/adapt/jobs/fixture-ai/download', { values: {} })).status, 400);
+    const aiDownload = await request('/api/adapt/jobs/fixture-ai/download', { values: { token: 'temporary-download-token', offer: '1' } });
+    assert.equal(aiDownload.status, 200); assert.ok(unzip(Buffer.from(await aiDownload.arrayBuffer()))['ops-submit.php']);
     const preparationArchive = zip({ 'index.html': Buffer.from('<form><input name="name"><input name="phone"></form>').toString('base64') }).toString('base64');
     assert.equal((await request('/api/prepare/inspect', { archive: preparationArchive })).status, 200);
     const preparation = await request('/api/prepare/build', { archive: preparationArchive, partner: 'lemonad', values: { token: 'test-token', offer: 'test-offer' } });

@@ -15,6 +15,7 @@ Environment=OPSLANDS_ORIGIN=https://land.portalwiki.world
 Environment=OPSLANDS_SECURE_COOKIE=1
 Environment=OPSLANDS_TRUST_PROXY=1
 EnvironmentFile=-/etc/opslands-sso.env
+EnvironmentFile=-/etc/opslands-ai.env
 Restart=always
 RestartSec=3
 UMask=0077
