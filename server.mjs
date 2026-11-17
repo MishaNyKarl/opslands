@@ -14,6 +14,13 @@ import { adaptationStore } from './lib/adapt.mjs';
 import { workflowStore } from './lib/workflows.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
+const releaseRevision = (() => {
+  let value;
+  try { value = readFileSync(join(root, '.release-revision'), 'utf8').trim(); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  if (!/^[a-f0-9]{40}$/.test(value)) throw new Error('Invalid release revision');
+  return value;
+})();
 const externalOrigin = process.env.OPSLANDS_ORIGIN ? new URL(process.env.OPSLANDS_ORIGIN).origin : null;
 const data = process.env.OPSLANDS_DATA || join(root, 'data');
 mkdirSync(data, { recursive: true });
@@ -87,6 +94,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${host}`), path = url.pathname;
     const requestOrigin = externalOrigin && host === new URL(externalOrigin).host ? externalOrigin : `http://${host}`;
     if (req.method === 'POST' && (req.headers.origin && req.headers.origin !== requestOrigin || !req.headers['content-type']?.startsWith('application/json'))) return json(res, { error: 'Запрос должен исходить из приложения' }, 403);
+    if (path === '/healthz' && req.method === 'GET') return json(res, { status: 'ok', revision: releaseRevision });
     const user = auth.current(req, res);
     const removedPaths = ['/api/auth/login', '/api/auth/setup', '/api/admin/users', '/auth/opsvault/link/start', '/auth/opsvault/link/confirm'];
     if (removedPaths.includes(path)) return json(res, { error: 'Вход и создание аккаунта доступны только через OpsVault' }, 410);
@@ -98,7 +106,7 @@ const server = http.createServer(async (req, res) => {
       return res.end();
     }
     if (user && (path.startsWith('/preview/') || path.startsWith('/api/') && path !== '/api/auth/logout')) { await sso.authorize(user, req, req.method !== 'GET'); req.opsUser = user; }
-    if (path === '/api/auth/me' && req.method === 'GET') return json(res, { user: user ? { ...publicUser(user), sessionMode: req.opsSession.mode } : null, needsSetup: false, ssoEnabled: sso.enabled(), ssoJitEnabled: sso.jitEnabled() });
+    if (path === '/api/auth/me' && req.method === 'GET') return json(res, { user: user ? { ...publicUser(user), sessionMode: req.opsSession.mode } : null, needsSetup: false, ssoEnabled: sso.enabled(), ssoJitEnabled: sso.jitEnabled(), revision: releaseRevision });
     if (path === '/auth/opsvault/logout' && req.method === 'POST') { if (!user) return json(res, { error: 'Войдите в аккаунт' }, 401); await body(req); await sso.globalLogout(req, res, user); return json(res, { ok: true }); }
     if ((path.startsWith('/api/') || path.startsWith('/preview/')) && !user) return json(res, { error: 'Войдите в учетную запись' }, 401);
     if (path === '/api/auth/logout' && req.method === 'POST') { auth.logout(req, res); return json(res, { ok: true }); }

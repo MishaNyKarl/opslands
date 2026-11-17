@@ -30,6 +30,9 @@ test('persistent catalog, custom partner, version creation, asset import and rea
   }
   try {
     await start();
+    const health = await request('/healthz');
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { status: 'ok', revision: null });
     assert.equal((await request('/api/adapt/jobs')).status, 401);
     assert.equal((await request('/api/adapt/config')).status, 401);
     assert.equal((await request('/api/prepare/inspect', { archive: '' })).status, 401);

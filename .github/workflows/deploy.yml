@@ -1,0 +1,111 @@
+name: OPSLands CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm install --global pnpm@11.25.0
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: sudo apt-get update && sudo apt-get install -y php-cli php-curl
+      - run: python3 -m unittest discover -s test -p '*_test.py' -v
+      - run: node --test test/*.test.mjs
+        env:
+          PHP_PATH: php
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    concurrency:
+      group: opslands-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Skip a revision superseded while tests were running
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [ "$latest" = "$GITHUB_SHA" ]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            echo 'A newer main revision exists; skipping this deployment.'
+          fi
+      - name: Package the tested revision without data or secrets
+        if: steps.release.outputs.current == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/release"
+          mkdir -p "$stage/app"
+          git archive "$GITHUB_SHA" server.mjs package.json pnpm-lock.yaml lib public README.md | tar -xf - -C "$stage/app"
+          printf '%s\n' "$GITHUB_SHA" > "$stage/app/.release-revision"
+          tar -czf "$RUNNER_TEMP/opslands-release.tar.gz" -C "$stage" app
+      - name: Install and verify the release
+        if: steps.release.outputs.current == 'true'
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          for value in SSH_HOST SSH_PORT SSH_USER SSH_KEY SSH_KNOWN_HOSTS; do
+            test -n "${!value}" || { echo "Missing deployment secret: $value"; exit 1; }
+          done
+          [[ "$SSH_PORT" =~ ^[0-9]+$ ]]
+          [[ "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$SSH_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          sshdir=$(mktemp -d)
+          trap 'rm -rf "$sshdir"' EXIT
+          chmod 700 "$sshdir"
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > "$sshdir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$sshdir/known_hosts"
+          chmod 600 "$sshdir/key" "$sshdir/known_hosts"
+          ssh-keygen -y -f "$sshdir/key" > /dev/null
+          ssh -T -i "$sshdir/key" -p "$SSH_PORT" \
+            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$sshdir/known_hosts" \
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "$SSH_USER@$SSH_HOST" deploy < "$RUNNER_TEMP/opslands-release.tar.gz"
+      - name: Verify the public HTTPS endpoint serves this revision
+        if: steps.release.outputs.current == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error --connect-timeout 10 --max-time 15 \
+              https://land.portalwiki.world/healthz -o "$RUNNER_TEMP/health.json" && \
+              jq --exit-status --arg revision "$GITHUB_SHA" '.status == "ok" and .revision == $revision' "$RUNNER_TEMP/health.json"; then
+              echo "Production serves tested revision $GITHUB_SHA"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo 'Public health or deployed revision check failed'
+          exit 1
