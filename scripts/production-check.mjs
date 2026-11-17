@@ -12,7 +12,7 @@ try {
   page.on('pageerror', e => errors.push(e.message));
   await page.goto(origin); await page.locator('.card').first().waitFor();
   await page.locator('#profile').click();
-  await page.getByRole('button', { name:'Связать OpsVault',exact:true }).waitFor();
+  await page.getByRole('button', { name:'Выйти из OpsVault на этом устройстве',exact:true }).waitFor();
   await page.locator('#close-modal').click();
   assert.ok(await page.locator('.card').count() >= 3);
   assert.equal(await page.locator('#auth-root').isVisible(), false);
@@ -32,6 +32,7 @@ try {
   const unauthenticated = await anonymous.request.get(origin + '/api/catalog'); assert.equal(unauthenticated.status(), 401);
   const signIn = await anonymous.newPage(); await signIn.goto(origin);
   await signIn.getByRole('link', {name:'Войти через OpsVault',exact:true}).waitFor();
+  assert.equal(await signIn.locator('input[name=login], input[name=password]').count(), 0);
   const oidcStart = await anonymous.request.get(origin + '/auth/opsvault/login', { maxRedirects:0 });
   assert.equal(oidcStart.status(),302); assert.equal(new URL(oidcStart.headers().location).searchParams.get('client_id'),'opslands');
   assert.ok(oidcStart.headers()['set-cookie'].includes('HttpOnly'));

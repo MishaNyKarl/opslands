@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { seedSession } from './session-fixture.mjs';
 
 test('private access, user administration and durable/revocable sessions', async () => {
   const data = mkdtempSync(join(tmpdir(), 'opslands-auth-'));
@@ -26,19 +27,19 @@ test('private access, user administration and durable/revocable sessions', async
   try {
     await start();
     assert.equal((await request(anon, '/api/catalog')).status, 401);
-    const setup = await request(admin, '/api/auth/setup', { name: 'Admin', login: 'admin', password: 'password-admin' });
-    assert.equal(setup.status, 201);
-    assert.ok(setup.headers.get('set-cookie').includes('HttpOnly'));
-    assert.ok(setup.headers.get('set-cookie').includes('Max-Age=15552000'));
-    const root = (await setup.json()).user;
-    assert.equal((await request(anon, '/api/auth/setup', { name: 'Second', login: 'second', password: 'password-second' })).status, 409);
-    const aliceResponse = await request(admin, '/api/admin/users', { name: 'Alice', login: 'alice', password: 'password-alice', role: 'member' });
-    assert.equal(aliceResponse.status, 201); const aliceUser = await aliceResponse.json(); assert.ok(!aliceUser.hash);
-    const bobResponse = await request(admin, '/api/admin/users', { name: 'Bob', login: 'bob', password: 'password-bob', role: 'member' });
-    const bobUser = await bobResponse.json();
-    assert.equal((await request(alice, '/api/auth/login', { login: 'alice', password: 'wrong' })).status, 401);
-    assert.equal((await request(alice, '/api/auth/login', { login: 'alice', password: 'password-alice' })).status, 200);
-    assert.equal((await request(bob, '/api/auth/login', { login: 'bob', password: 'password-bob' })).status, 200);
+    for (const path of ['/api/auth/setup', '/api/auth/login', '/api/admin/users', '/auth/opsvault/link/start', '/auth/opsvault/link/confirm']) {
+      assert.equal((await request(anon, path, { login: 'admin', password: 'password-admin' })).status, 410);
+    }
+    assert.equal((await (await request(anon, '/api/auth/me')).json()).needsSetup, false);
+    const legacy = seedSession(data, { name: 'Legacy', login: 'legacy', role: 'admin' }, 'local');
+    assert.equal((await request(legacy, '/api/admin')).status, 401);
+    assert.equal((await (await request(legacy, '/api/auth/me')).json()).user, null);
+    const rootSession = seedSession(data, { name: 'Admin', login: 'admin', role: 'admin' });
+    admin.cookie = rootSession.cookie; const root = rootSession.user;
+    const aliceSession = seedSession(data, { name: 'Alice', login: 'alice' });
+    alice.cookie = aliceSession.cookie; const aliceUser = aliceSession.user;
+    const bobSession = seedSession(data, { name: 'Bob', login: 'bob' });
+    bob.cookie = bobSession.cookie; const bobUser = bobSession.user;
     const personal = await (await request(alice, '/api/landings', { name: 'Private Alice', html, ownerId: bobUser.id, author: 'Spoofed' })).json();
     assert.equal(personal.ownerId, aliceUser.id); assert.equal(personal.author, 'Alice'); assert.equal(personal.isGlobal, false);
     const shared = await (await request(alice, '/api/landings', { name: 'Shared Alice', html, isGlobal: true })).json();
@@ -50,7 +51,7 @@ test('private access, user administration and durable/revocable sessions', async
     assert.equal((await request(bob, '/api/landings', { name: 'Stolen', parentId: personal.id })).status, 404);
     assert.equal((await request(bob, `/api/landings/${shared.id}/visibility`, { isGlobal: false })).status, 403);
     assert.equal((await request(bob, '/api/admin')).status, 403);
-    assert.equal((await request(bob, '/api/admin/users', { name: 'Intruder', login: 'intruder', password: 'password-intruder', role: 'admin' })).status, 403);
+    assert.equal((await request(bob, '/api/admin/users', { name: 'Intruder', login: 'intruder', password: 'password-intruder', role: 'admin' })).status, 410);
     assert.equal((await request(bob, `/api/admin/users/${aliceUser.id}/delete`, {})).status, 403);
     assert.equal((await request(bob, '/api/partners', {})).status, 403);
     const adminData = await (await request(admin, '/api/admin')).json(); assert.ok(adminData.landings.some(l => l.id === personal.id));
@@ -70,7 +71,7 @@ test('private access, user administration and durable/revocable sessions', async
     const renewal = await request(alice, '/api/auth/me'); assert.ok(renewal.headers.get('set-cookie'));
     assert.equal((await request(admin, `/api/admin/users/${aliceUser.id}/delete`, {})).status, 200);
     assert.equal((await request(alice, '/api/catalog')).status, 401);
-    assert.equal((await request(alice, '/api/auth/login', { login: 'alice', password: 'password-alice' })).status, 401);
+    assert.equal((await request(alice, '/api/auth/login', { login: 'alice', password: 'password-alice' })).status, 410);
     assert.equal((await request(admin, `/api/landings/${personal.id}`)).status, 200);
     const orphanCatalog = await (await request(bob, '/api/catalog')).json(); assert.ok(orphanCatalog.landings.some(l => l.id === shared.id));
     const oldCookie = bob.cookie; assert.equal((await request(bob, '/api/auth/logout', {})).status, 200);

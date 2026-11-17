@@ -10,7 +10,8 @@ try {
   page.on('pageerror', e => errors.push(e.message));
   await page.goto(origin);
   await page.getByRole('link', { name: 'Войти через OpsVault', exact: true }).waitFor();
-  await page.getByText('Первый вход через OpsVault автоматически создаст аккаунт OPSLands, если вам выдан доступ.', { exact: true }).waitFor();
+  await page.getByText('Первый вход через OpsVault автоматически создаст аккаунт OPSLands.', { exact: true }).waitFor();
+  assert.equal(await page.locator('input[name=login], input[name=password]').count(), 0);
   const response = await page.request.get(origin + '/auth/opsvault/login', { maxRedirects: 0 });
   assert.equal(response.status(), 302);
   const redirect = new URL(response.headers().location);

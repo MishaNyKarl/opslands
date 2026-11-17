@@ -88,22 +88,17 @@ const server = http.createServer(async (req, res) => {
     const requestOrigin = externalOrigin && host === new URL(externalOrigin).host ? externalOrigin : `http://${host}`;
     if (req.method === 'POST' && (req.headers.origin && req.headers.origin !== requestOrigin || !req.headers['content-type']?.startsWith('application/json'))) return json(res, { error: 'Запрос должен исходить из приложения' }, 403);
     const user = auth.current(req, res);
-    const linkingPaths = ['/auth/opsvault/link/start', '/auth/opsvault/link/confirm'];
+    const removedPaths = ['/api/auth/login', '/api/auth/setup', '/api/admin/users', '/auth/opsvault/link/start', '/auth/opsvault/link/confirm'];
+    if (removedPaths.includes(path)) return json(res, { error: 'Вход и создание аккаунта доступны только через OpsVault' }, 410);
     if (req.method === 'POST' && path.startsWith('/auth/') && req.headers.origin !== requestOrigin) return json(res, { error: 'Недопустимый источник запроса' }, 403);
     if (path === '/auth/opsvault/login' && req.method === 'GET') { res.writeHead(302, { Location: await sso.begin(req, res), 'Cache-Control': 'no-store' }); return res.end(); }
     if (path === '/auth/opsvault/callback' && req.method === 'GET') {
-      try { const destination = await sso.callback(req, res, new URL(req.url, externalOrigin || `http://${host}`), user); res.writeHead(302, { Location: destination, 'Cache-Control': 'no-store' }); }
+      try { const destination = await sso.callback(req, res, new URL(req.url, externalOrigin || `http://${host}`)); res.writeHead(302, { Location: destination, 'Cache-Control': 'no-store' }); }
       catch { res.writeHead(302, { Location: '/?opsvault=error', 'Cache-Control': 'no-store' }); }
       return res.end();
     }
-    if (user && (path.startsWith('/preview/') || path.startsWith('/api/') && !['/api/auth/login', '/api/auth/logout'].includes(path) || linkingPaths.includes(path))) { await sso.authorize(user, req, req.method !== 'GET'); req.opsUser = user; }
-    req.checkCentralLogin = async candidate => { await sso.authorize(candidate, null, true); };
-    if (path === '/api/auth/me' && req.method === 'GET') return json(res, { user: user ? { ...publicUser(user), sessionMode: req.opsSession?.mode || 'local' } : null, needsSetup: !auth.users().length, ssoEnabled: sso.enabled(), ssoJitEnabled: sso.jitEnabled(), pendingLink: user ? await sso.pending(req, user) : null });
-    if (path === '/api/auth/setup' && req.method === 'POST') return json(res, { user: await auth.setup(await body(req), res) }, 201);
-    if (path === '/api/auth/login' && req.method === 'POST') return json(res, { user: await auth.login(await body(req), req, res) });
-    if (linkingPaths.includes(path) && !user) return json(res, { error: 'Войдите в локальный аккаунт' }, 401);
-    if (path === '/auth/opsvault/link/start' && req.method === 'POST') return json(res, { redirect: await sso.begin(req, res, user, await body(req)) });
-    if (path === '/auth/opsvault/link/confirm' && req.method === 'POST') { const input = await body(req); if (input.confirm !== true) throw new Error('Подтвердите оба аккаунта'); return json(res, await sso.confirm(req, res, user)); }
+    if (user && (path.startsWith('/preview/') || path.startsWith('/api/') && path !== '/api/auth/logout')) { await sso.authorize(user, req, req.method !== 'GET'); req.opsUser = user; }
+    if (path === '/api/auth/me' && req.method === 'GET') return json(res, { user: user ? { ...publicUser(user), sessionMode: req.opsSession.mode } : null, needsSetup: false, ssoEnabled: sso.enabled(), ssoJitEnabled: sso.jitEnabled() });
     if (path === '/auth/opsvault/logout' && req.method === 'POST') { if (!user) return json(res, { error: 'Войдите в аккаунт' }, 401); await body(req); await sso.globalLogout(req, res, user); return json(res, { ok: true }); }
     if ((path.startsWith('/api/') || path.startsWith('/preview/')) && !user) return json(res, { error: 'Войдите в учетную запись' }, 401);
     if (path === '/api/auth/logout' && req.method === 'POST') { auth.logout(req, res); return json(res, { ok: true }); }
@@ -139,9 +134,6 @@ const server = http.createServer(async (req, res) => {
     }
     if (path === '/api/catalog' && req.method === 'GET') return json(res, { landings: all('landing').filter(l => canRead(user, l)).map(summary), partners: all('partner') });
     if (path === '/api/admin' && req.method === 'GET') { requireAdmin(user); return json(res, { users: auth.users().map(publicUser), landings: all('landing').map(summary) }); }
-    if (path === '/api/admin/users' && req.method === 'POST') {
-      requireAdmin(user); const created = await auth.createUser(await body(req)); await sso.authorize(user, req, true); requireAdmin(user); save('user', created); return json(res, publicUser(created), 201);
-    }
     const deleteUser = path.match(/^\/api\/admin\/users\/([^/]+)\/delete$/);
     if (deleteUser && req.method === 'POST') { requireAdmin(user); auth.deleteUser(deleteUser[1], user); return json(res, { ok: true }); }
     const visibility = path.match(/^\/api\/landings\/([^/]+)\/visibility$/);

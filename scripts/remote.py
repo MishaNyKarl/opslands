@@ -51,7 +51,9 @@ try:
     if request.get('browser_check'):
         token = secrets.token_hex(32)
         session_id = hashlib.sha256(token.encode()).hexdigest()
-        create = "import sqlite3,json,time; d=sqlite3.connect('/var/lib/opslands/opslands.sqlite'); users=[json.loads(r[0]) for r in d.execute(\"SELECT payload FROM records WHERE kind='user'\")]; u=next(u for u in users if u['role']=='admin'); s={'id':'" + session_id + "','userId':u['id'],'expiresAt':int(time.time()*1000)+300000,'refreshedAt':int(time.time()*1000)}; d.execute('INSERT INTO records VALUES (?,?,?)',('session',s['id'],json.dumps(s))); d.commit()"
+        # Copy an existing valid OIDC context so QA exercises central access policy.
+        # No synthetic local login or lease is created on the production server.
+        create = "import sqlite3,json,time; d=sqlite3.connect('/var/lib/opslands/opslands.sqlite'); users=[json.loads(r[0]) for r in d.execute(\"SELECT payload FROM records WHERE kind='user'\")]; admins={u['id'] for u in users if u['role']=='admin' and u.get('sso')}; sessions=[json.loads(r[0]) for r in d.execute(\"SELECT payload FROM records WHERE kind='session'\")]; now=int(time.time()*1000); s=next((s for s in sessions if s.get('mode')=='oidc' and s.get('ssoSecret') and s['userId'] in admins and s['expiresAt']>now),None); assert s is not None, 'Production QA requires an active admin OIDC session'; s.update(id='" + session_id + "',expiresAt=min(s['expiresAt'],now+300000),refreshedAt=now); d.execute('INSERT INTO records VALUES (?,?,?)',('session',s['id'],json.dumps(s))); d.commit()"
         _, stdout, stderr = client.exec_command('python3 -c ' + __import__('shlex').quote(create))
         if stdout.channel.recv_exit_status():
             raise RuntimeError(stderr.read().decode())

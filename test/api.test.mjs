@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import { unzip, zip } from '../lib/archive.mjs';
+import { seedSession } from './session-fixture.mjs';
 
 test('persistent catalog, custom partner, version creation, asset import and real download', async () => {
   const data = mkdtempSync(join(tmpdir(), 'opslands-test-'));
@@ -32,8 +33,8 @@ test('persistent catalog, custom partner, version creation, asset import and rea
     assert.equal((await request('/api/adapt/jobs')).status, 401);
     assert.equal((await request('/api/adapt/config')).status, 401);
     assert.equal((await request('/api/prepare/inspect', { archive: '' })).status, 401);
-    const setup = await request('/api/auth/setup', { name: 'Tester', login: 'tester', password: 'test-password' });
-    assert.equal(setup.status, 201); const owner = (await setup.json()).user;
+    const seeded = seedSession(data, { name: 'Tester', login: 'tester', role: 'admin' });
+    cookie = seeded.cookie; const owner = seeded.user;
     const aiConfig = await (await request('/api/adapt/config')).json();
     assert.ok(!JSON.stringify(aiConfig).includes('OPENROUTER_API_KEY'));
     assert.deepEqual((await (await request('/api/adapt/jobs')).json()).jobs, []);
@@ -66,9 +67,7 @@ test('persistent catalog, custom partner, version creation, asset import and rea
     assert.equal(inspectedBase.status, 200); assert.ok((await inspectedBase.json()).diagnostics);
     const again = await request(`/api/landings/${preparedSaved.id}/workflow-download`, { values: { token: 'download-only', offer: '1' } });
     assert.equal(again.status, 200); assert.ok(unzip(Buffer.from(await again.arrayBuffer()))['ops-config.php']);
-    await request('/api/admin/users', { name: 'Other', login: 'other-reader', password: 'other-password', role: 'member' });
-    const otherLogin = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ login: 'other-reader', password: 'other-password' }) });
-    const otherCookie = otherLogin.headers.get('set-cookie').split(';')[0];
+    const { cookie: otherCookie } = seedSession(data, { name: 'Other', login: 'other-reader' });
     const deniedDownload = await fetch(`${base}/api/landings/${preparedSaved.id}/workflow-download`, { method: 'POST', headers: { Cookie: otherCookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ values: { token: 'x', offer: '1' } }) });
     assert.equal(deniedDownload.status, 404);
     assert.equal((await fetch(`${base}/preview/${preparedSaved.parentId}/index.html`, { headers: { Cookie: otherCookie } })).status, 404);

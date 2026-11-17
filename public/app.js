@@ -3,7 +3,7 @@ document.querySelectorAll('[data-lucide]').forEach(el => el.innerHTML = icon(el.
 const $ = (s, root = document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let user = '', account = null;
-let ssoEnabled = false, ssoJitEnabled = false;
+let ssoEnabled = false;
 const state = { view: 'catalog', landings: [], partners: [], query: '', type: '', language: '', sort: 'new' };
 const modal = $('#modal'), content = $('#content');
 $('.local-badge').lastChild.textContent = ['localhost', '127.0.0.1'].includes(location.hostname) ? ' Локальный MVP' : ' Командный MVP';
@@ -32,7 +32,7 @@ function render() {
   $('#page-description').textContent = state.view === 'partners' ? 'Настройте поля один раз. Используйте их в каждой новой сборке.' : 'Выберите шаблон, настройте партнерку и скачайте свою сборку.';
   $('#add-main').innerHTML = `${icon('plus')} ${state.view === 'partners' ? 'Добавить партнерку' : 'Добавить ленд'}`;
   $('#add-main').hidden = state.view === 'partners' && account.role !== 'admin';
-  if (state.view === 'admin') { $('#add-main').innerHTML = `${icon('plus')} Создать пользователя`; $('#page-description').textContent = 'Все пользователи и ленды команды, включая личные и неопубликованные.'; renderAdmin().catch(e => toast(e.message)); return; }
+  if (state.view === 'admin') { $('#add-main').hidden = true; $('#page-description').textContent = 'Все пользователи и ленды команды, включая личные и неопубликованные.'; renderAdmin().catch(e => toast(e.message)); return; }
   if (['prepare', 'adapt'].includes(state.view)) { $('#add-main').hidden = true; $('#page-description').textContent = state.view === 'adapt' ? 'Страна, язык, герой и изображения. Исходник и результат сохраняются в «Моих лендах».' : 'Подключите формы к партнерке. Исходник и подготовленный вариант сохранятся в «Моих лендах».'; return renderPreparation(); }
   if (state.view === 'partners') return renderPartners();
   if (state.view === 'mine') $('#page-description').textContent = 'Исходники, подготовленные ленды и ИИ-адаптации — с историей и сравнением до / после.';
@@ -282,10 +282,9 @@ function openPartner(partner) {
 }
 $('#close-modal').onclick = () => modal.close();
 document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { state.view = b.dataset.view; state.query = ''; state.type = ''; state.language = ''; state.sort = 'new'; content.innerHTML = '<p class="subtitle" role="status">Загружаем ленды…</p>'; load().catch(e => toast(e.message)); });
-$('#add-main').onclick = () => state.view === 'admin' ? openUserForm() : state.view === 'partners' ? openPartner() : openEditor().catch(e => toast(e.message));
+$('#add-main').onclick = () => state.view === 'partners' ? openPartner() : openEditor().catch(e => toast(e.message));
 $('#profile').onclick = () => {
-  showModal(`<div class="modal-content fields"><h2>${esc(account.name)}</h2><p class="subtitle">${esc(account.login)} · ${account.role === 'admin' ? 'Администратор' : 'Участник команды'}</p><div class="info-box">Вход сохранен на этом устройстве. Повторно вводить пароль при открытии платформы не нужно.</div>${account.ssoLinked ? `<div class="info-box">Связан с OpsVault: ${esc(account.opsvaultName)}. <a href="${esc(account.credentialUrl)}" target="_blank" rel="noreferrer">Реквизиты в OpsVault</a></div>` : ssoEnabled ? `<button class="primary" id="link-opsvault">Связать OpsVault</button>` : ''}${account.sessionMode === 'oidc' ? '<button class="secondary" id="global-logout">Выйти из OpsVault на этом устройстве</button>' : ''}<div class="modal-actions"><button class="secondary" id="logout">Выйти из аккаунта</button></div></div>`, 'OPSLANDS / АККАУНТ');
-  if ($('#link-opsvault')) $('#link-opsvault').onclick = linkOpsVault;
+  showModal(`<div class="modal-content fields"><h2>${esc(account.name)}</h2><p class="subtitle">${esc(account.login)} · ${account.role === 'admin' ? 'Администратор' : 'Участник команды'}</p><div class="info-box">Вход сохранен на этом устройстве. Вы вошли через OpsVault.</div>${account.ssoLinked ? `<div class="info-box">Аккаунт OpsVault: ${esc(account.opsvaultName)}</div>` : ''}${account.sessionMode === 'oidc' ? '<button class="secondary" id="global-logout">Выйти из OpsVault на этом устройстве</button>' : ''}<div class="modal-actions"><button class="secondary" id="logout">Выйти из аккаунта</button></div></div>`, 'OPSLANDS / АККАУНТ');
   if ($('#global-logout')) $('#global-logout').onclick = async () => { try { await api('/auth/opsvault/logout', {}); showAuth(false); } catch(e) { toast(e.message); } };
   $('#logout').onclick = async () => { try { await api('/api/auth/logout', {}); showAuth(false); } catch (e) { toast(e.message); } };
 };
@@ -293,27 +292,20 @@ start().catch(e => { document.body.classList.remove('booting'); content.innerHTM
 
 async function start() {
   const session = await api('/api/auth/me');
-  ssoEnabled = session.ssoEnabled; ssoJitEnabled = session.ssoJitEnabled;
-  if (!session.user) return showAuth(session.needsSetup);
+  ssoEnabled = session.ssoEnabled;
+  if (!session.user) return showAuth();
   account = session.user; user = account.name;
   await load(); document.body.classList.remove('booting', 'auth-required'); $('#auth-root').hidden = true;
-  if (session.pendingLink) confirmLink(session.pendingLink);
-  if (new URLSearchParams(location.search).get('opsvault') === 'error') toast('Вход OpsVault не завершен. Для первого входа откройте профиль локального аккаунта и свяжите его.');
+  if (new URLSearchParams(location.search).get('opsvault') === 'error') toast('Не удалось завершить вход через OpsVault. Повторите попытку.');
   if (location.search) history.replaceState(null, '', '/');
 }
-function showAuth(setup) {
+function showAuth() {
   if (modal.open) modal.close(); account = null; user = ''; state.view = 'catalog';
   document.body.classList.remove('booting'); document.body.classList.add('auth-required');
   const root = $('#auth-root'); root.hidden = false;
-  root.innerHTML = `<div class="auth-intro"><a class="brand" href="/">ops<span>lands</span>${icon('arrow-up-right')}</a><p class="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО КОМАНДЫ</p><h1>Один вход.<br>Все ваши ленды.</h1><p>Библиотека шаблонов, личные версии и готовые сборки — в одном месте.</p><span class="auth-note">${icon('check')} Вход сохраняется на этом устройстве</span></div><form id="login-form" class="auth-card fields"><div><p class="eyebrow">${setup ? 'ПЕРВЫЙ ЗАПУСК' : 'С ВОЗВРАЩЕНИЕМ'}</p><h2>${setup ? 'Создайте администратора' : 'Войти в OPSLands'}</h2><p class="subtitle">${setup ? 'Первый аккаунт получит управление командой и всеми лендами.' : 'Войдите один раз. Дальше платформа откроется сразу.'}</p></div>${setup ? '<label>Ваше имя<input name="name" autocomplete="name" required maxlength="80" placeholder="Как к вам обращаться"></label>' : ''}${ssoEnabled && !setup ? '<a class="secondary wide sso-login" href="/auth/opsvault/login">Войти через OpsVault</a><p class="auth-divider">или логин и пароль OPSLands</p>' : ''}<label>Логин<input name="login" autocomplete="username" required minlength="3" maxlength="80" placeholder="your.login" autocapitalize="none" spellcheck="false"></label><label>Пароль<input name="password" type="password" autocomplete="${setup ? 'new-password' : 'current-password'}" required ${setup ? 'minlength="8"' : ''} maxlength="200" placeholder="${setup ? 'Минимум 8 символов' : 'Ваш пароль'}"></label><div class="error" role="alert"></div><button class="primary wide" type="submit">${setup ? 'Создать и войти' : 'Войти'} ${icon('arrow-up-right')}</button><p class="auth-footnote">${setup ? 'Существующие демо будут общими. Загруженные ранее ленды станут вашими личными.' : ssoJitEnabled ? 'Первый вход через OpsVault автоматически создаст аккаунт OPSLands, если вам выдан доступ.' : 'Аккаунты для команды создает администратор.'}</p></form>`;
-  const form = $('#login-form');
-  form.onsubmit = async e => {
-    e.preventDefault(); const button = $('button[type=submit]', form); button.disabled = true; $('.error', form).classList.remove('visible');
-    try {
-      const result = await api(setup ? '/api/auth/setup' : '/api/auth/login', { login: form.elements.login.value, password: form.elements.password.value, name: form.elements.name?.value });
-      account = result.user; user = account.name; await load(); root.hidden = true; root.innerHTML = ''; document.body.classList.remove('auth-required');
-    } catch (e) { error(form, e); } finally { button.disabled = false; }
-  };
+  const failed = new URLSearchParams(location.search).get('opsvault') === 'error';
+  root.innerHTML = `<div class="auth-intro"><a class="brand" href="/">ops<span>lands</span>${icon('arrow-up-right')}</a><p class="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО КОМАНДЫ</p><h1>Один вход.<br>Все ваши ленды.</h1><p>Библиотека шаблонов, личные версии и готовые сборки — в одном месте.</p><span class="auth-note">${icon('check')} Вход сохраняется на этом устройстве</span></div><div class="auth-card fields"><div><p class="eyebrow">С ВОЗВРАЩЕНИЕМ</p><h2>Войти в OPSLands</h2><p class="subtitle">Используйте ваш аккаунт OpsVault.</p></div>${ssoEnabled ? '<a class="primary wide sso-login" href="/auth/opsvault/login">Войти через OpsVault</a><p class="auth-footnote">Первый вход через OpsVault автоматически создаст аккаунт OPSLands.</p>' : '<p class="info-box" role="status">Вход через OpsVault временно недоступен. Обратитесь к администратору.</p>'}${failed ? '<div class="error visible" role="alert">Не удалось завершить вход через OpsVault. Повторите попытку.</div>' : ''}</div>`;
+  if (failed) history.replaceState(null, '', '/');
 }
 function visibilityBadge(l) {
   const label = l.isGlobal ? 'Общий' : 'Личный';
@@ -339,32 +331,11 @@ async function renderAdmin() {
   $('#admin-search').oninput = rows; rows();
   document.querySelectorAll('[data-delete-user]').forEach(button => button.onclick = () => {
     const target = data.users.find(u => u.id === button.dataset.deleteUser);
-    showModal(`<div class="modal-content fields"><h2>Удалить ${esc(target.name)}?</h2><p class="subtitle">Пользователь потеряет доступ, его сессии будут завершены. Ленды сохранятся: личные будут доступны администраторам, общие — всей команде.</p><div class="error" role="alert"></div><div class="modal-actions"><button class="secondary" id="cancel-delete">Отмена</button><button class="danger-button" id="confirm-delete">Удалить пользователя</button></div></div>`, 'OPSLANDS / ПОЛЬЗОВАТЕЛИ');
+    showModal(`<div class="modal-content fields"><h2>Удалить ${esc(target.name)}?</h2><p class="subtitle">Локальный аккаунт и его сессии будут удалены. Следующий вход через OpsVault создаст аккаунт заново. Для отзыва доступа отключите пользователя в OpsVault. Ленды сохранятся: личные будут доступны администраторам, общие — всей команде.</p><div class="error" role="alert"></div><div class="modal-actions"><button class="secondary" id="cancel-delete">Отмена</button><button class="danger-button" id="confirm-delete">Удалить пользователя</button></div></div>`, 'OPSLANDS / ПОЛЬЗОВАТЕЛИ');
     $('#cancel-delete').onclick = () => modal.close();
     $('#confirm-delete').onclick = async e => {
       e.target.disabled = true;
       try { await api(`/api/admin/users/${target.id}/delete`, {}); modal.close(); await load(); toast('Пользователь удален. Ленды сохранены.'); } catch (e) { error($('.modal-content'), e); $('#confirm-delete').disabled = false; }
     };
   });
-}
-function openUserForm() {
-  showModal(`<form class="modal-content fields" id="user-form"><h2>Новый пользователь</h2><p class="subtitle">Передайте участнику логин и пароль. После первого входа сессия сохранится на его устройстве.</p><div class="two"><label>Имя<input name="name" required maxlength="80" autocomplete="off"></label><label>Логин<input name="login" required minlength="3" maxlength="80" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="name.surname"></label></div><div class="two"><label>Пароль<input name="password" type="password" required minlength="8" maxlength="200" autocomplete="new-password"></label><label>Роль<select name="role"><option value="member">Участник</option><option value="admin">Администратор</option></select></label></div><div class="error" role="alert"></div><div class="modal-actions"><button type="button" class="secondary" id="cancel-user">Отмена</button><button type="submit" class="primary">Создать пользователя ${icon('check')}</button></div></form>`, 'OPSLANDS / КОМАНДА');
-  $('#cancel-user').onclick = () => modal.close(); const form = $('#user-form');
-  form.onsubmit = async e => {
-    e.preventDefault(); const button = $('button[type=submit]', form); button.disabled = true;
-    try { await api('/api/admin/users', Object.fromEntries(new FormData(form))); modal.close(); await renderAdmin(); toast('Пользователь создан'); } catch (e) { error(form, e); } finally { button.disabled = false; }
-  };
-}
-function linkOpsVault() {
-  modal.close();
-  showModal(`<form class="modal-content fields" id="link-form"><h2>Связать аккаунт с OpsVault</h2><p class="subtitle">Ваш ID, ленды и пароль OPSLands сохранятся. Введите пароль именно OPSLands, не пароль портала.</p><label>Пароль OPSLands<input name="password" type="password" required maxlength="200" autocomplete="current-password"></label><label><span><input name="consent" type="checkbox" required> Согласен сохранить логин и пароль OPSLands в своем зашифрованном хранилище OpsVault</span></label><div class="error" role="alert"></div><div class="modal-actions"><button class="primary">Продолжить в OpsVault</button></div></form>`, 'OPSLANDS / СВЯЗЫВАНИЕ');
-  const form = $('#link-form'); form.onsubmit = async e => {
-    e.preventDefault(); const button = $('button', form); button.disabled = true;
-    try { const result = await api('/auth/opsvault/link/start', { password: form.elements.password.value, consent: form.elements.consent.checked }); location.assign(result.redirect); } catch(e) { error(form, e); button.disabled = false; }
-  };
-}
-function confirmLink(pending) {
-  showModal(`<div class="modal-content fields"><h2>Подтвердите оба аккаунта</h2><div class="info-box">OPSLands: <strong>${esc(pending.localLogin)}</strong><br>OpsVault: <strong>${esc(pending.opsvaultName)}</strong></div><p class="subtitle">Связать эти аккаунты и сохранить отдельные реквизиты OPSLands в OpsVault? Владельцы лендов и ваш пароль останутся прежними.</p><div class="error" role="alert"></div><div class="modal-actions"><button class="secondary" id="cancel-link">Отмена</button><button class="primary" id="confirm-link">Подтвердить связь</button></div></div>`, 'OPSLANDS / ПОДТВЕРЖДЕНИЕ');
-  $('#cancel-link').onclick = () => modal.close();
-  $('#confirm-link').onclick = async e => { e.target.disabled = true; try { await api('/auth/opsvault/link/confirm', { confirm: true }); modal.close(); await start(); toast('Аккаунты связаны. Реквизиты сохранены в OpsVault.'); } catch(e) { error($('.modal-content'), e); $('#confirm-link').disabled = false; } };
 }

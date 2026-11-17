@@ -18,9 +18,9 @@ async function fixture() {
   const auth=authStore({all,get,save,remove,db});
   const user=await auth.createUser({name:'Existing',login:'existing',password:'original-password',role:'admin'});save('user',user);
   const localRes=response();auth.begin(localRes,user,{mode:'local'});
-  const req={headers:{cookie:cookie(localRes,'opslands_session')}};auth.current(req,response());
+  const req={headers:{cookie:cookie(localRes,'opslands_session')},opsSession:all('session')[0]};
   save('landing',{id:'owned',ownerId:user.id});
-  const env={SSO_CLIENT_ID:'test-client',SSO_CLIENT_SECRET:'test-secret',SSO_ENCRYPTION_KEY:randomBytes(32).toString('base64url'),SSO_ENABLED:'1',SSO_LINK_USERS:user.id,SSO_EMERGENCY_USERS:user.id,SSO_REDIRECT_URI:'https://app.example/auth/opsvault/callback'};
+  const env={SSO_CLIENT_ID:'test-client',SSO_CLIENT_SECRET:'test-secret',SSO_ENCRYPTION_KEY:randomBytes(32).toString('base64url'),SSO_ENABLED:'1',SSO_REDIRECT_URI:'https://app.example/auth/opsvault/callback'};
   const {publicKey,privateKey}=await generateKeyPair('RS256'),jwk=await exportJWK(publicKey);jwk.kid='test-key';jwk.alg='RS256';
   const subject=randomUUID(), api={nonce:null,badNonce:false,publishFailure:false,published:null,sidMismatch:false,role:'user',credentialCalls:0};
   const config=new oidc.Configuration({issuer,authorization_endpoint:issuer+'/authorize/',token_endpoint:issuer+'/token/',jwks_uri:issuer+'/jwks',authorization_response_iss_parameter_supported:true},env.SSO_CLIENT_ID,{id_token_signed_response_alg:'RS256'},oidc.ClientSecretBasic(env.SSO_CLIENT_SECRET));
@@ -40,72 +40,85 @@ async function fixture() {
     throw Error('unknown endpoint');
   };
   const sso=ssoStore({all,get,save,remove,db,auth,env,fetcher,configure:async()=>config});
-  async function begin(link=true){const res=response();const redirect=await sso.begin(req,res,link?user:null,link?{password:'original-password',consent:true}:undefined);const url=new URL(redirect);api.nonce=url.searchParams.get('nonce');req.headers.cookie=cookie(localRes,'opslands_session')+'; '+cookie(res,'opslands_oidc');return new URL(env.SSO_REDIRECT_URI+'?code=code&state='+url.searchParams.get('state')+'&iss='+encodeURIComponent(issuer));}
+  async function begin(){const res=response();const redirect=await sso.begin(req,res);const url=new URL(redirect);api.nonce=url.searchParams.get('nonce');req.headers.cookie=cookie(localRes,'opslands_session')+'; '+cookie(res,'opslands_oidc');return new URL(env.SSO_REDIRECT_URI+'?code=code&state='+url.searchParams.get('state')+'&iss='+encodeURIComponent(issuer));}
   return {db,all,get,save,remove,auth,sso,env,user,req,api,begin,subject};
 }
-test('explicit link verifies OIDC, preserves owner/hash, publishes before commit and reuses identity',async()=>{
-  const f=await fixture();try{
-    const url=await f.begin();assert.equal(await f.sso.callback(f.req,response(),url,f.user),'/?opsvault=pending');
-    assert.equal(f.get('user',f.user.id).sso,undefined);
-    await assert.rejects(f.sso.callback(f.req,response(),url,f.user));
-    const pending=await f.sso.pending(f.req,f.user);assert.equal(pending.opsvaultName,'Central User');assert.equal(pending.password,undefined);
-    const res=response();await f.sso.confirm(f.req,res,f.user);
-    const linked=f.get('user',f.user.id);assert.equal(linked.id,f.user.id);assert.equal(linked.hash,f.user.hash);assert.equal(f.get('landing','owned').ownerId,f.user.id);
-    assert.equal(f.api.published.password,'original-password');assert.equal(f.api.published.local_user_id,f.user.id);
-    assert.equal(f.all('session').length,1);assert.equal(f.all('session')[0].mode,'oidc');assert.ok(!JSON.stringify(f.all('session')).includes('lease-secret'));
-    assert.equal(f.all('sso-pending').length,0);
-    const second=await f.begin(false);await f.sso.callback(f.req,response(),second,null);assert.equal(f.all('user').length,1);assert.equal(f.api.credentialCalls,1);
-  }finally{f.db.close();}
-});
-test('wrong nonce/sid/state and failed publication never link the existing account',async()=>{
+test('invalid OIDC nonce/signature/audience/hash/sid/state and failed publication never provision',async()=>{
   for(const condition of ['badNonce','badSignature','badAudience','badAtHash','sidMismatch','state','publishFailure']){
     const f=await fixture();try{
       let url=await f.begin();if(condition==='state')url.searchParams.set('state','wrong');else f.api[condition]=true;
-      if(condition==='publishFailure'){await f.sso.callback(f.req,response(),url,f.user);await assert.rejects(f.sso.confirm(f.req,response(),f.user));}
-      else await assert.rejects(f.sso.callback(f.req,response(),url,f.user));
-      assert.equal(f.get('user',f.user.id).sso,undefined);assert.equal(f.get('user',f.user.id).hash,f.user.hash);
+      await assert.rejects(f.sso.callback(f.req,response(),url));
+      await assert.rejects(f.sso.callback(f.req,response(),url));
+      assert.equal(f.all('user').length,1);assert.equal(f.get('user',f.user.id).sso,undefined);
     }finally{f.db.close();}
   }
 });
+
 test('JIT recovery reuses canonical ID/login/password and never merges a username collision',async()=>{
   const f=await fixture();try{
     f.env.SSO_JIT='1';
-    await f.sso.callback(f.req,response(),await f.begin(false),null);
+    await f.sso.callback(f.req,response(),await f.begin(),null);
     const id=f.api.published.local_user_id, username=f.api.published.username,password=f.api.published.password;
     f.remove('user',id); // Simulate a local DB rollback after successful publication.
-    await f.sso.callback(f.req,response(),await f.begin(false),null);
+    await f.sso.callback(f.req,response(),await f.begin(),null);
     const recovered=f.get('user',id);assert.equal(recovered.login,username);assert.ok(await f.auth.checkPassword(recovered,password));
     assert.equal(f.api.published.local_user_id,id);assert.equal(f.api.published.password,password);
     f.remove('user',id);const unrelated={...recovered,id:randomUUID(),sso:undefined};f.save('user',unrelated);
-    await assert.rejects(f.sso.callback(f.req,response(),await f.begin(false),null));
+    await assert.rejects(f.sso.callback(f.req,response(),await f.begin(),null));
     assert.equal(f.get('user',unrelated.id).sso,undefined);
-  }finally{f.db.close();}
-});
-test('JIT is closed for an existing-data pilot; bad local password and absent consent fail',async()=>{
-  const f=await fixture();try{
-    await assert.rejects(f.sso.begin(f.req,response(),f.user,{password:'wrong',consent:true}));
-    await assert.rejects(f.sso.begin(f.req,response(),f.user,{password:'original-password',consent:false}));
-    const url=await f.begin(false);await assert.rejects(f.sso.callback(f.req,response(),url,null));assert.equal(f.all('user').length,1);
   }finally{f.db.close();}
 });
 test('JIT creates a separate account and vault credentials once; repeat keeps ID/login/password',async()=>{
   const f=await fixture();try{
     f.env.SSO_JIT='1';
-    await f.sso.callback(f.req,response(),await f.begin(false),null);
+    await f.sso.callback(f.req,response(),await f.begin(),null);
     const created=f.all('user').find(u=>u.id!==f.user.id),first={...f.api.published};
     assert.ok(created.sso);assert.equal(created.role,'member');assert.ok(await f.auth.checkPassword(created,first.password));
     assert.equal(first.local_user_id,created.id);assert.equal(first.username,created.login);
     assert.ok(!JSON.stringify(f.all('user')).includes(first.password));
-    await f.sso.callback(f.req,response(),await f.begin(false),null);
+    await f.sso.callback(f.req,response(),await f.begin(),null);
     assert.equal(f.all('user').length,2);assert.equal(f.api.credentialCalls,1);assert.equal(f.get('user',created.id).hash,created.hash);
   }finally{f.db.close();}
 });
-test('JIT refuses missing grants and protects an active unlinked existing account',async()=>{
-  for(const mode of ['denied','existing']){
+test('JIT refuses central denial without saving an account or credentials',async()=>{
+  const f=await fixture();try{
+    const url=await f.begin();f.api.accessDenied=true;
+    await assert.rejects(f.sso.callback(f.req,response(),url,null));
+    assert.equal(f.all('user').length,1);assert.equal(f.api.credentialCalls,0);
+  }finally{f.db.close();}
+});
+
+test('empty database provisions an ordinary first user and issues a revocable OIDC session',async()=>{
+  const f=await fixture();try{
+    f.remove('user',f.user.id);
+    assert.equal(f.sso.jitEnabled(),true);
+    const res=response();
+    assert.equal(await f.sso.callback(f.req,res,await f.begin()),'/');
+    const req={headers:{cookie:cookie(res,'opslands_session')}};
+    const user=f.auth.current(req,response());
+    assert.equal(user.role,'member');assert.equal(f.all('user').length,1);
+    assert.equal(req.opsSession.mode,'oidc');
+    assert.ok(!JSON.stringify(req.opsSession).includes('lease-secret'));
+    f.api.role='owner';
+    assert.equal((await f.sso.authorize(user,req,true)).role,'admin');
+    f.api.accessDenied=true;
+    await assert.rejects(f.sso.authorize(user,req,true),{status:403});
+    assert.equal(f.auth.current(req,response()),null);
+  }finally{f.db.close();}
+});
+
+test('all OpsVault roles provision and persist the correct role; repeat updates without duplicates',async()=>{
+  for (const role of ['admin','dev','owner','user','member']) {
     const f=await fixture();try{
-      f.env.SSO_JIT='1';const url=await f.begin(false);f.api.accessDenied=mode==='denied';
-      await assert.rejects(f.sso.callback(f.req,response(),url,mode==='existing'?f.user:null));
-      assert.equal(f.all('user').length,1);assert.equal(f.api.credentialCalls,0);assert.equal(f.get('user',f.user.id).hash,f.user.hash);
+      f.env.SSO_JIT='0'; f.api.role=role;
+      await f.sso.callback(f.req,response(),await f.begin(),f.user);
+      const created=f.all('user').find(u=>u.id!==f.user.id);
+      assert.equal(created.role,['admin','dev','owner'].includes(role)?'admin':'member');
+      assert.equal(f.get('landing','owned').ownerId,f.user.id);
+      f.api.role=created.role==='admin'?'user':'owner';
+      await f.sso.callback(f.req,response(),await f.begin(),null);
+      assert.equal(f.get('user',created.id).role,created.role==='admin'?'member':'admin');
+      assert.equal(f.all('user').length,2);assert.equal(f.api.credentialCalls,1);
     }finally{f.db.close();}
   }
 });

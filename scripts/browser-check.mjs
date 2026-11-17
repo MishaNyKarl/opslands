@@ -11,6 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { workflowStore } from '../lib/workflows.mjs';
 import sharp from 'sharp';
 import { prepareLanding } from '../lib/prepare.mjs';
+import { seedSession } from '../test/session-fixture.mjs';
 
 const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
 const data = mkdtempSync(join(tmpdir(), 'opslands-browser-')), port = 41000 + Math.floor(Math.random() * 1000);
@@ -22,10 +23,25 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1050 }, acceptDownloads: true });
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.goto(`http://127.0.0.1:${port}`);
-  await page.locator('#login-form [name=name]').fill('QA Admin');
-  await page.locator('#login-form [name=login]').fill('qa.admin');
-  await page.locator('#login-form [name=password]').fill('test-password');
-  await page.getByRole('button', { name: 'Создать и войти' }).click();
+  await page.getByText('Вход через OpsVault временно недоступен. Обратитесь к администратору.').waitFor();
+  assert.equal(await page.locator('input[name=login], input[name=password]').count(), 0);
+  await page.screenshot({ path: 'data/qa/auth-opsvault-only.png', fullPage: true });
+  // Render enabled SSO on an empty database without contacting the real provider.
+  await page.route('**/api/auth/me', route => route.fulfill({ json: { user: null, ssoEnabled: true, ssoJitEnabled: true, needsSetup: false } }));
+  await page.reload();
+  await page.getByRole('link', { name: 'Войти через OpsVault', exact: true }).waitFor();
+  assert.equal(await page.locator('input[name=login], input[name=password]').count(), 0);
+  await page.screenshot({ path: 'data/qa/auth-opsvault-enabled.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.screenshot({ path: 'data/qa/auth-opsvault-mobile.png', fullPage: true });
+  await page.goto(`http://127.0.0.1:${port}/?opsvault=error`);
+  await page.getByRole('alert').filter({ hasText: 'Не удалось завершить вход' }).waitFor();
+  await page.unroute('**/api/auth/me');
+  await page.setViewportSize({ width: 1440, height: 1050 });
+  const seeded = seedSession(data, { name: 'QA Admin', login: 'qa.admin', role: 'admin' });
+  await page.context().addCookies([{ name: 'opslands_session', value: seeded.cookie.split('=')[1], url: `http://127.0.0.1:${port}` }]);
+  await page.goto(`http://127.0.0.1:${port}`);
   await page.locator('.card').first().waitFor();
   assert.equal(await page.locator('.card').count(), 3);
   // Provider work is mocked; preview and ZIP use the real authenticated HTTP routes.
@@ -179,20 +195,15 @@ try {
   await page.locator('#modal').waitFor({ state: 'hidden' }); await page.getByRole('heading', { name: 'QA Partner' }).waitFor();
   await page.locator('[data-view=admin]').click();
   await page.locator('#admin-search').waitFor();
-  await page.locator('#add-main').click();
-  await page.locator('#user-form [name=name]').fill('QA Member');
-  await page.locator('#user-form [name=login]').fill('qa.member');
-  await page.locator('#user-form [name=password]').fill('member-password');
-  await page.locator('#user-form').getByRole('button', { name: 'Создать пользователя', exact: true }).click();
-  await page.locator('#modal').waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#add-main').isVisible(), false);
+  const memberSession = seedSession(data, { name: 'QA Member', login: 'qa.member' });
+  await page.locator('[data-view=admin]').click();
   await page.locator('.admin-table').first().getByText('QA Member', { exact: true }).waitFor();
   await page.screenshot({ path: 'data/qa/admin-desktop.png', fullPage: true });
   const member = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   member.on('pageerror', e => errors.push(e.message));
+  await member.context().addCookies([{ name: 'opslands_session', value: memberSession.cookie.split('=')[1], url: `http://127.0.0.1:${port}` }]);
   await member.goto(`http://127.0.0.1:${port}`);
-  await member.locator('#login-form [name=login]').fill('qa.member');
-  await member.locator('#login-form [name=password]').fill('member-password');
-  await member.getByRole('button', { name: 'Войти', exact: true }).click();
   await member.locator('.card').first().waitFor();
   assert.equal(await member.locator('.card').count(), 3, 'Member sees admin private variation');
   assert.equal(await member.locator('#admin-nav').isVisible(), false);
@@ -217,7 +228,7 @@ try {
   await page.locator('.admin-table').first().locator('tr').filter({ hasText: 'QA Member' }).getByRole('button', { name: 'Удалить', exact: true }).click();
   await page.getByRole('button', { name: 'Удалить пользователя', exact: true }).click();
   await page.locator('#modal').waitFor({ state: 'hidden' });
-  await member.reload(); await member.locator('#login-form').waitFor();
+  await member.reload(); await member.locator('#auth-root .auth-card').waitFor();
   await member.close();
   await page.reload(); await page.locator('.card').first().waitFor();
   assert.equal(await page.locator('#auth-root').isVisible(), false, 'Session lost on reload');
@@ -229,7 +240,7 @@ try {
   await page.screenshot({ path: 'data/qa/build-mobile.png', fullPage: true });
   assert.ok(await page.locator('#modal').evaluate(el => el.scrollWidth <= el.clientWidth), 'Mobile modal overflows');
   assert.deepEqual(errors, []);
-  console.log('Browser QA passed: setup, persistent login, admin user creation, search, preview, ZIP download, version, partner, mobile; no JS errors.');
+  console.log('Browser QA passed: OpsVault-only entry, persistent session, admin user list, search, preview, ZIP download, version, partner, mobile; no JS errors.');
 } finally {
   await browser?.close(); if (server.exitCode === null) { const done = once(server, 'exit'); server.kill(); await done; }
   rmSync(data, { recursive: true, force: true });
