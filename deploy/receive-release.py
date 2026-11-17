@@ -90,7 +90,7 @@ def receive():
                 os.chown(directory, owner.pw_uid, owner.pw_gid, follow_symlinks=False)
                 os.chmod(directory, 0o755)
             cache = Path("/var/cache/opslands-deploy")
-            run("runuser", "-u", "opslands", "--", "/opt/opslands/node/bin/npm", "exec",
+            run("/usr/sbin/runuser", "-u", "opslands", "--", "/opt/opslands/node/bin/npm", "exec",
                 "--yes", "--package=pnpm@11.25.0", "--", "pnpm", "install", "--prod",
                 "--frozen-lockfile", "--ignore-scripts", cwd=destination,
                 env={"PATH": "/opt/opslands/node/bin:/usr/bin:/bin", "HOME": str(cache),

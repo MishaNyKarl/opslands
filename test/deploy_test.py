@@ -99,7 +99,7 @@ class DeploymentTests(unittest.TestCase):
         self.receive(self.archive())
         self.assertNotEqual(self.current.resolve(), self.previous)
         self.assertEqual((self.current / ".release-revision").read_text(), self.revision)
-        self.assertEqual(self.commands[1][0], "runuser")
+        self.assertEqual(self.commands[1][0], "/usr/sbin/runuser")
         self.assertEqual(self.commands[-1], ("systemctl", "restart", "opslands.service"))
 
     def test_unhealthy_release_rolls_back_and_restarts_previous(self):
@@ -111,7 +111,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_dependency_failure_keeps_running_release(self):
         def fail_install(*args, **kwargs):
-            if args[0] == "runuser":
+            if args[0] == "/usr/sbin/runuser":
                 raise RuntimeError("Simulated failed dependency installation")
         with patch.object(self.receiver, "run", fail_install):
             with self.assertRaises(RuntimeError):
