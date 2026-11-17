@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "jose": "6.2.12",
-    "openid-client": "^6.8.8"
+    "openid-client": "^6.8.8",
+    "parse5": "8.0.0"
   }
 }

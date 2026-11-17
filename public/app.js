@@ -7,7 +7,7 @@ let ssoEnabled = false, ssoJitEnabled = false;
 const state = { view: 'catalog', landings: [], partners: [], query: '', type: '', language: '', sort: 'new' };
 const modal = $('#modal'), content = $('#content');
 $('.local-badge').lastChild.textContent = ['localhost', '127.0.0.1'].includes(location.hostname) ? ' Локальный MVP' : ' Командный MVP';
-const labels = { catalog: 'Все ленды', popular: 'Популярные', mine: 'Мои ленды', partners: 'Партнерки', admin: 'Администрирование' };
+const labels = { catalog: 'Все ленды', prepare: 'Подготовить ленд', mine: 'Мои ленды', partners: 'Партнерки', admin: 'Администрирование' };
 async function api(path, data) {
   const res = await fetch(path, data === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
   if (!res.ok) { const error = await res.json(); if (res.status === 401 && !path.startsWith('/api/auth/')) showAuth(false); throw new Error(error.error || 'Ошибка сервера'); }
@@ -28,11 +28,12 @@ function render() {
   profile(); stats(); $('#nav-count').textContent = state.landings.length;
   $('#breadcrumb').textContent = labels[state.view];
   document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === state.view));
-  $('#page-title').innerHTML = { catalog: 'Ленды, готовые к работе<span>.</span>', popular: 'То, что выбирает команда<span>.</span>', mine: 'Ваш вклад в библиотеку<span>.</span>', partners: 'Партнерки и подключения<span>.</span>', admin: 'Все под контролем<span>.</span>' }[state.view];
+  $('#page-title').innerHTML = { catalog: 'Ленды, готовые к работе<span>.</span>', prepare: 'Подготовьте ленд к запуску<span>.</span>', mine: 'Ваш вклад в библиотеку<span>.</span>', partners: 'Партнерки и подключения<span>.</span>', admin: 'Все под контролем<span>.</span>' }[state.view];
   $('#page-description').textContent = state.view === 'partners' ? 'Настройте поля один раз. Используйте их в каждой новой сборке.' : 'Выберите шаблон, настройте партнерку и скачайте свою сборку.';
   $('#add-main').innerHTML = `${icon('plus')} ${state.view === 'partners' ? 'Добавить партнерку' : 'Добавить ленд'}`;
   $('#add-main').hidden = state.view === 'partners' && account.role !== 'admin';
   if (state.view === 'admin') { $('#add-main').innerHTML = `${icon('plus')} Создать пользователя`; $('#page-description').textContent = 'Все пользователи и ленды команды, включая личные и неопубликованные.'; renderAdmin().catch(e => toast(e.message)); return; }
+  if (state.view === 'prepare') { $('#add-main').hidden = true; $('#page-description').textContent = 'Загрузите ZIP, выберите партнерку и получите готовый архив.'; return renderPreparation(); }
   if (state.view === 'partners') return renderPartners();
   const types = [...new Set(state.landings.map(l => l.type))].sort(), languages = [...new Set(state.landings.map(l => l.language))].sort();
   content.innerHTML = `<div class="toolbar"><label class="search"><span>${icon('search')}</span><input id="search" aria-label="Поиск ленда" placeholder="Найти ленд, тип или автора…" value="${esc(state.query)}"></label><select id="type-filter" aria-label="Тип"><option value="">Все типы</option>${types.map(t => `<option ${state.type === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select><select id="language-filter" aria-label="Язык"><option value="">Все языки</option>${languages.map(t => `<option ${state.language === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select><select id="sort" class="sort" aria-label="Сортировка"><option value="new">Сначала новые</option><option value="downloads">По скачиваниям</option><option value="changes">По изменениям</option></select></div><div class="section-label"><strong id="result-label"></strong><span>ШАБЛОН → ПАРТНЕРКА → ZIP</span></div><div class="grid" id="grid"></div><div class="hint"><span>${icon('arrow-up-right')}</span><div><b>Хорошие ленды работают снова.</b> Сохраните свой вариант в библиотеку — команда сможет использовать его в следующем запуске.</div></div>`;
@@ -77,6 +78,40 @@ async function openBuild(id) {
   };
 }
 async function base64(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = () => reject(new Error('Не удалось прочитать файл')); reader.readAsDataURL(file); }); }
+function renderPreparation() {
+  content.innerHTML = `<form id="prepare-form" class="prepare-panel fields"><div class="section-label"><strong>01 ЗАГРУЗКА → 02 ПАРТНЕРКА → 03 ГОТОВЫЙ ZIP</strong></div><label>Архив ленда<input name="archive" type="file" accept=".zip" required><small>До 20 МБ. Можно загрузить архив с несколькими лендами и выбрать нужный.</small></label><button class="secondary" type="button" id="inspect-landing">Продолжить ${icon('arrow-up-right')}</button><div id="prepare-options" hidden></div><div class="error" role="alert"></div><p id="prepare-status" role="status"></p></form>`;
+  const form = $('#prepare-form'); let archive = null;
+  const reset = () => { archive = null; $('#prepare-options').hidden = true; $('#prepare-options').innerHTML = ''; $('#prepare-status').textContent = ''; };
+  form.elements.archive.onchange = reset;
+  $('#inspect-landing').onclick = async e => {
+    e.target.disabled = true; $('.error', form).classList.remove('visible'); reset();
+    try {
+      const file = form.elements.archive.files[0];
+      if (!file) throw new Error('Выберите ZIP с лендом');
+      if (file.size > 20 * 1024 * 1024) throw new Error('Размер ZIP — до 20 МБ');
+      archive = await base64(file);
+      const result = await api('/api/prepare/inspect', { archive });
+      const options = $('#prepare-options'); options.hidden = false;
+      options.innerHTML = `<div class="fields"><label>Ленд<select name="entry">${result.candidates.map(c => `<option value="${esc(c.entry)}">${esc(c.name)} — ${esc(c.entry)}</option>`).join('')}</select></label><label>Партнерская программа<select name="partner"><option value="">Выберите партнерку</option>${result.partners.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label><div class="fields" id="prepare-values"></div><div class="info-box">Формы с полями name и phone будут подключены к выбранной партнерке. Старые PHP-обработчики и логи удаляются. Для работы нужен хостинг с PHP 8.2+ и cURL. Журнал отправок будет на этом хостинге; имена, полные телефоны и токены в него не записываются. После размещения проверьте тестовую заявку в кабинете партнерки. Пиксель со старой страницы благодарности не переносится.</div><button type="submit" class="primary" id="prepare-download" disabled>${icon('download')} Подготовить и скачать ZIP</button></div>`;
+      form.elements.partner.onchange = () => {
+        const partner = result.partners.find(p => p.id === form.elements.partner.value);
+        $('#prepare-values').innerHTML = partner ? partner.fields.map(key => `<label>${{ token: 'Токен вебмастера', offer: 'ID оффера', flow: 'ID потока' }[key]} *<input name="${key}" type="${key === 'token' ? 'password' : 'text'}" required maxlength="500" autocomplete="off"></label>`).join('') : '';
+        $('#prepare-download').disabled = !partner;
+      };
+    } catch (err) { error(form, err); } finally { e.target.disabled = false; }
+  };
+  form.onsubmit = async e => {
+    e.preventDefault(); if (!archive || !form.elements.partner?.value) return;
+    const button = $('#prepare-download'); button.disabled = true; $('.error', form).classList.remove('visible'); $('#prepare-status').textContent = 'Подготавливаем архив…';
+    try {
+      const values = Object.fromEntries(['token', 'offer', 'flow'].map(key => [key, form.elements[key]?.value || '']));
+      const res = await fetch('/api/prepare/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archive, entry: form.elements.entry.value, partner: form.elements.partner.value, values }) });
+      if (!res.ok) throw new Error((await res.json()).error);
+      const url = URL.createObjectURL(await res.blob()), a = document.createElement('a'); a.href = url; a.download = `opslands-${form.elements.partner.value}.zip`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+      form.elements.token.value = ''; $('#prepare-status').textContent = 'Архив готов. Скачивание началось. Параметры и токен не сохранены в библиотеке.';
+    } catch (err) { $('#prepare-status').textContent = ''; error(form, err); } finally { button.disabled = false; }
+  };
+}
 async function openEditor(id) {
   const l = id ? await api(`/api/landings/${id}`) : null;
   const html = l ? new TextDecoder().decode(Uint8Array.from(atob(l.files[l.entry]), c => c.charCodeAt(0))) : '<!doctype html>\n<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Мой ленд</title></head>\n<body>\n<h1>Ваш заголовок</h1>\n<form action="{{form_action}}" method="{{form_method}}">\n{{hidden_fields}}\n<input name="name" placeholder="Имя" required>\n<input name="phone" type="tel" placeholder="Телефон" required>\n<button>Отправить заявку</button>\n</form>\n</body></html>';
@@ -117,7 +152,7 @@ function openPartner(partner) {
   };
 }
 $('#close-modal').onclick = () => modal.close();
-document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { state.view = b.dataset.view; state.query = ''; state.type = ''; state.language = ''; state.sort = state.view === 'popular' ? 'downloads' : 'new'; render(); });
+document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { state.view = b.dataset.view; state.query = ''; state.type = ''; state.language = ''; state.sort = 'new'; render(); });
 $('#add-main').onclick = () => state.view === 'admin' ? openUserForm() : state.view === 'partners' ? openPartner() : openEditor().catch(e => toast(e.message));
 $('#profile').onclick = () => {
   showModal(`<div class="modal-content fields"><h2>${esc(account.name)}</h2><p class="subtitle">${esc(account.login)} · ${account.role === 'admin' ? 'Администратор' : 'Участник команды'}</p><div class="info-box">Вход сохранен на этом устройстве. Повторно вводить пароль при открытии платформы не нужно.</div>${account.ssoLinked ? `<div class="info-box">Связан с OpsVault: ${esc(account.opsvaultName)}. <a href="${esc(account.credentialUrl)}" target="_blank" rel="noreferrer">Реквизиты в OpsVault</a></div>` : ssoEnabled ? `<button class="primary" id="link-opsvault">Связать OpsVault</button>` : ''}${account.sessionMode === 'oidc' ? '<button class="secondary" id="global-logout">Выйти из OpsVault на этом устройстве</button>' : ''}<div class="modal-actions"><button class="secondary" id="logout">Выйти из аккаунта</button></div></div>`, 'OPSLANDS / АККАУНТ');

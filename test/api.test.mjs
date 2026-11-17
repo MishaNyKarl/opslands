@@ -28,7 +28,13 @@ test('persistent catalog, custom partner, version creation, asset import and rea
   }
   try {
     await start();
+    assert.equal((await request('/api/prepare/inspect', { archive: '' })).status, 401);
     assert.equal((await request('/api/auth/setup', { name: 'Tester', login: 'tester', password: 'test-password' })).status, 201);
+    const preparationArchive = zip({ 'index.html': Buffer.from('<form><input name="name"><input name="phone"></form>').toString('base64') }).toString('base64');
+    assert.equal((await request('/api/prepare/inspect', { archive: preparationArchive })).status, 200);
+    const preparation = await request('/api/prepare/build', { archive: preparationArchive, partner: 'lemonad', values: { token: 'test-token', offer: 'test-offer' } });
+    assert.equal(preparation.status, 200);
+    assert.ok(unzip(Buffer.from(await preparation.arrayBuffer()))['ops-submit.php']);
     let catalog = await (await request('/api/catalog')).json(); assert.equal(catalog.landings.length, 3);
     const partner = await (await request('/api/partners', { name: 'Test PP', method: 'POST', fields: [{ key: 'campaign', target: 'offer', label: 'Campaign', type: 'text', required: true }] })).json();
     const source = await (await request('/api/landings/story')).json();

@@ -10,4 +10,7 @@ jobs:
           node-version: '24'
       - run: npm install --global pnpm@11.25.0
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: sudo apt-get update && sudo apt-get install -y php-cli php-curl
       - run: node --test test/*.test.mjs
+        env:
+          PHP_PATH: php

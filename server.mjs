@@ -9,6 +9,7 @@ import { validatePartner, buildLanding } from './lib/build.mjs';
 import { seeds } from './lib/seeds.mjs';
 import { authStore, publicUser, requireAdmin, canRead, requireLanding, requireOwner } from './lib/auth.mjs';
 import { ssoStore } from './lib/sso.mjs';
+import { inspectPreparation, prepareLanding } from './lib/prepare.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const externalOrigin = process.env.OPSLANDS_ORIGIN ? new URL(process.env.OPSLANDS_ORIGIN).origin : null;
@@ -87,6 +88,13 @@ const server = http.createServer(async (req, res) => {
     if (path === '/auth/opsvault/logout' && req.method === 'POST') { if (!user) return json(res, { error: 'Войдите в аккаунт' }, 401); await body(req); await sso.globalLogout(req, res, user); return json(res, { ok: true }); }
     if ((path.startsWith('/api/') || path.startsWith('/preview/')) && !user) return json(res, { error: 'Войдите в учетную запись' }, 401);
     if (path === '/api/auth/logout' && req.method === 'POST') { auth.logout(req, res); return json(res, { ok: true }); }
+    if (path === '/api/prepare/inspect' && req.method === 'POST') return json(res, inspectPreparation((await body(req)).archive));
+    if (path === '/api/prepare/build' && req.method === 'POST') {
+      const prepared = prepareLanding(await body(req));
+      const archive = zip(prepared.files);
+      res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="opslands-${prepared.partner}.zip"`, 'Content-Length': archive.length, 'Cache-Control': 'no-store' });
+      return res.end(archive);
+    }
     if (path === '/api/catalog' && req.method === 'GET') return json(res, { landings: all('landing').filter(l => canRead(user, l)).map(summary), partners: all('partner') });
     if (path === '/api/admin' && req.method === 'GET') { requireAdmin(user); return json(res, { users: auth.users().map(publicUser), landings: all('landing').map(summary) }); }
     if (path === '/api/admin/users' && req.method === 'POST') {
