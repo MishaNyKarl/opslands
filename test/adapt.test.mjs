@@ -98,6 +98,27 @@ test('unknown/token-based image pricing refuses generation', async () => {
   try { await assert.rejects(store.create(user, { ...input, images: ['i0'] }), /фиксированной ценой/); } finally { store.close(); }
 });
 
+test('adaptation can remove an inline claim while requiring every id and rejecting an empty page', () => {
+  const view = adaptationDocument({ 'index.html': b64('<html><h1>Better <b>forever</b>!</h1><p>Read more</p></html>') });
+  const translated = view.fields.map(field => ({ id: field.id, text: field.text === 'forever' ? '' : field.text }));
+  assert.match(applyAdaptation(view, translated, 'en-GB'), /Better <b><\/b>!/);
+  assert.throws(() => applyAdaptation(view, translated.slice(1), 'en-GB'), /неполный/);
+  assert.throws(() => applyAdaptation(view, translated.map(t => ({ ...t, text: '' })), 'en-GB'), /пустую страницу/);
+});
+
+test('a charged response rejected by validation still reports known cost without leaking its content', async () => {
+  const { store } = fixture({ fetcher: async (url, options) => {
+    const texts = JSON.parse(JSON.parse(options.body).messages[1].content).texts;
+    texts[0].text = 'api_key=do-not-publish';
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ texts }) } }], usage: { cost: 0.003 } });
+  } });
+  try {
+    const job = await store.create(user, input), status = await completed(store, job.id);
+    assert.equal(status.state, 'failed'); assert.equal(status.costUsd, 0.003);
+    assert.match(status.error, /t0: признаки/); assert.doesNotMatch(status.error, /do-not-publish/);
+  } finally { store.close(); }
+});
+
 test('alternate model choices and tiered fixed image prices keep optional reference charges out of requests', async () => {
   const imageRequests = [];
   const { store } = fixture({ fetcher: async (url, options) => {
