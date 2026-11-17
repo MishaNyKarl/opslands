@@ -98,6 +98,23 @@ test('unknown/token-based image pricing refuses generation', async () => {
   try { await assert.rejects(store.create(user, { ...input, images: ['i0'] }), /фиксированной ценой/); } finally { store.close(); }
 });
 
+test('alternate model choices and tiered fixed image prices keep optional reference charges out of requests', async () => {
+  const imageRequests = [];
+  const { store } = fixture({ fetcher: async (url, options) => {
+    if (url.endsWith('/endpoints')) return Response.json({ endpoints: [{ provider_tag: 'sourceful', pricing: [{ billable: 'output_image', unit: 'image', cost_usd: 0.02 }, { billable: 'output_image', unit: 'image', cost_usd: 0.04, variant: '2k' }, { billable: 'input_font', unit: 'image', cost_usd: 0.03 }, { billable: 'input_reference', unit: 'image', cost_usd: 0.2 }] }] });
+    const body = JSON.parse(options.body);
+    if (url.endsWith('/images')) { imageRequests.push(body); return Response.json({ data: [{ b64_json: Buffer.from([137,80,78,71,13,10,26,10,0]).toString('base64') }] }); }
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ texts: JSON.parse(body.messages[1].content).texts }) } }] });
+  } });
+  try {
+    assert.ok(store.config().textModels.includes('deepseek/deepseek-v3.2'));
+    const job = await store.create(user, { ...input, textModel: 'qwen/qwen3-235b-a22b-2507', imageModel: 'sourceful/riverflow-v2-fast', images: ['i0'] });
+    assert.equal((await completed(store, job.id)).state, 'ready'); assert.equal(imageRequests.length, 1);
+    assert.ok(!imageRequests[0].input_references); assert.ok(!imageRequests[0].font_inputs);
+    assert.ok(job.reservedUsd >= 0.06 && job.reservedUsd <= input.budgetUsd);
+  } finally { store.close(); }
+});
+
 test('cancellation aborts a running request, prevents publication and retains reservation', async () => {
   let started;
   const start = new Promise(resolve => { started = resolve; });

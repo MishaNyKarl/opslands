@@ -11,6 +11,7 @@ import { authStore, publicUser, requireAdmin, canRead, requireLanding, requireOw
 import { ssoStore } from './lib/sso.mjs';
 import { inspectPreparation, prepareLanding } from './lib/prepare.mjs';
 import { adaptationStore } from './lib/adapt.mjs';
+import { workflowStore } from './lib/workflows.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const externalOrigin = process.env.OPSLANDS_ORIGIN ? new URL(process.env.OPSLANDS_ORIGIN).origin : null;
@@ -25,7 +26,9 @@ const remove = (kind, id) => db.prepare('DELETE FROM records WHERE kind=? AND id
 const auth = authStore({ all, get, save, remove, db });
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS sso_identity ON records(json_extract(payload,'$.sso.issuer'),json_extract(payload,'$.sso.subject')) WHERE kind='user' AND json_extract(payload,'$.sso.subject') IS NOT NULL");
 const sso = ssoStore({ all, get, save, remove, db, auth });
-const adaptations = adaptationStore({ all, get, save, remove });
+const workflows = workflowStore({ all, get, save, db });
+const adaptations = adaptationStore({ all, get, save, remove, onSource: workflows.source, onResult: workflows.adapted });
+workflows.recover();
 if (!all('landing').length) for (const landing of seeds()) save('landing', landing);
 if (!all('partner').length) save('partner', { id: 'generic', name: 'Универсальная форма', description: 'Прямое подключение к HTTP(S) обработчику. Поля заявки: name и phone. Для API с серверной авторизацией нужен отдельный адаптер.', method: 'POST', fields: [{ key: 'offer_id', target: 'offer_id', label: 'ID оффера', type: 'text', required: true }, { key: 'subid', target: 'subid', label: 'Sub ID', type: 'text', required: false }] });
 
@@ -58,6 +61,7 @@ function createLanding(input, user) {
   }
   if (Object.keys(files).length > 500 || Object.entries(files).reduce((total, [path, bytes]) => { safePath(path); return total + Buffer.from(bytes, 'base64').length; }, 0) > 40 * 1024 * 1024) throw new Error('Ленд превышает лимит: 500 файлов или 40 МБ');
   const landing = { id: randomUUID(), name: input.name.trim(), type: String(input.type || 'Другое').slice(0, 60), language: String(input.language || 'RU').slice(0, 20), description: String(input.description || '').slice(0, 1000), author: user.name, ownerId: user.id, isGlobal: input.isGlobal === true, color: parent?.color || 'sage', parentId: parent?.id || null, entry, files, downloads: 0, changes: 0, createdAt: new Date().toISOString(), demo: false };
+  if (parent?.workflow) landing.workflow = { ...parent.workflow, kind: 'edited', jobId: undefined, fingerprint: undefined };
   db.exec('BEGIN');
   try { save('landing', landing); if (parent) { parent.changes++; save('landing', parent); } db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
   return summary(landing);
@@ -113,8 +117,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (path === '/api/prepare/inspect' && req.method === 'POST') return json(res, inspectPreparation((await body(req)).archive));
     if (path === '/api/prepare/build' && req.method === 'POST') {
-      const prepared = prepareLanding(await body(req));
+      const input = await body(req), prepared = prepareLanding(input);
       const archive = zip(prepared.files);
+      const landing = workflows.prepared(user, prepared, input);
+      res.setHeader('X-OPSLands-Landing', landing.id);
       res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="opslands-${prepared.partner}.zip"`, 'Content-Length': archive.length, 'Cache-Control': 'no-store' });
       return res.end(archive);
     }
@@ -135,6 +141,13 @@ const server = http.createServer(async (req, res) => {
     const landingMatch = path.match(/^\/api\/landings\/([^/]+)$/);
     if (landingMatch && req.method === 'GET') return json(res, requireLanding(user, get('landing', landingMatch[1])));
     if (path === '/api/landings' && req.method === 'POST') return json(res, createLanding(await body(req), user), 201);
+    const workflowDownload = path.match(/^\/api\/landings\/([^/]+)\/workflow-download$/);
+    if (workflowDownload && req.method === 'POST') {
+      const input = await body(req), landing = requireLanding(user, get('landing', workflowDownload[1]));
+      const archive = workflows.download(landing, input.values);
+      landing.downloads++; save('landing', landing);
+      res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="opslands-landing.zip"', 'Cache-Control': 'no-store' }); return res.end(archive);
+    }
     if (path === '/api/partners' && req.method === 'POST') {
       requireAdmin(user);
       const input = await body(req), partner = { ...validatePartner(input), id: input.id || randomUUID() };
